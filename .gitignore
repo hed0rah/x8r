@@ -1,0 +1,13 @@
+.venv/
+build/
+bench/profiles/*.data
+bench/profiles/*.data.old
+bench/profiles/*.folded
+bench/profiles/*.svg
+bench/results.json
+bench/corpus/
+*.o
+*.a
+*.so
+__pycache__/
+*.pyc
