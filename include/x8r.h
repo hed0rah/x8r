@@ -23,6 +23,8 @@ typedef enum {
 
 typedef enum {
     X8R_VOCAB_CL100K = 0,
+    X8R_VOCAB_O200K  = 1,
+    X8R_VOCAB_AUTO   = 0xFFFF,  /* trust the blob's vocab_id */
 } x8r_vocab_id;
 
 typedef enum {

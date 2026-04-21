@@ -20,6 +20,57 @@ static inline void vocab_entry_read(const uint8_t *data, uint32_t off,
     *out_bytes = data + off + 6;
 }
 
+/* equal-length byte compare, specialized for short keys.
+ *
+ * cl100k length distribution: 79% of tokens are <= 8 bytes, 99% <= 16.
+ * libc's __memcmp_avx2_movbe previously cost ~6-8% of total runtime in the
+ * perf profile, almost entirely call/setup overhead for these tiny compares.
+ * a switch on len lets the compiler emit 1-2 mov+xor+jnz for the hot path
+ * and never call libc for len <= 16.
+ *
+ * unaligned loads are fine on x86; gcc lowers memcpy(&u64, p, 8) to a
+ * single movq. the vocab blob has no alignment guarantees past byte 0. */
+static inline int bytes_eq_fast(const uint8_t *a, const uint8_t *b, size_t len) {
+    uint64_t a0, a1, b0, b1;
+    switch (len) {
+    case 0: return 1;
+    case 1: return a[0] == b[0];
+    case 2: {
+        uint16_t x, y;
+        memcpy(&x, a, 2); memcpy(&y, b, 2);
+        return x == y;
+    }
+    case 3: {
+        uint16_t x, y;
+        memcpy(&x, a, 2); memcpy(&y, b, 2);
+        return x == y && a[2] == b[2];
+    }
+    case 4: {
+        uint32_t x, y;
+        memcpy(&x, a, 4); memcpy(&y, b, 4);
+        return x == y;
+    }
+    case 5: case 6: case 7: {
+        /* overlapping 4-byte loads cover [0..3] and [len-4..len-1]; every
+         * byte gets read at least once, no out-of-bounds access. */
+        uint32_t x0, x1, y0, y1;
+        memcpy(&x0, a, 4);             memcpy(&y0, b, 4);
+        memcpy(&x1, a + len - 4, 4);   memcpy(&y1, b + len - 4, 4);
+        return x0 == y0 && x1 == y1;
+    }
+    case 8:
+        memcpy(&a0, a, 8); memcpy(&b0, b, 8);
+        return a0 == b0;
+    case 9: case 10: case 11: case 12:
+    case 13: case 14: case 15: case 16:
+        memcpy(&a0, a, 8);             memcpy(&b0, b, 8);
+        memcpy(&a1, a + len - 8, 8);   memcpy(&b1, b + len - 8, 8);
+        return a0 == b0 && a1 == b1;
+    default:
+        return memcmp(a, b, len) == 0;
+    }
+}
+
 x8r_status x8r_vocab_load(const char *path, x8r_vocab *out) {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return X8R_E_VOCAB;
@@ -68,6 +119,7 @@ x8r_status x8r_vocab_load(const char *path, x8r_vocab *out) {
     out->table_size = tsz;
     out->table_mask = tsz - 1;
     out->data_bytes = dbytes;
+    out->vocab_id = vid;
     out->table = (const uint32_t *)(b + header);
     out->data  = b + header + (size_t)tsz * 4;
     out->map_base = p;
@@ -101,7 +153,7 @@ uint32_t x8r_vocab_lookup(const x8r_vocab *v, const uint8_t *bytes, size_t len) 
         uint32_t erank;
         const uint8_t *ebytes;
         vocab_entry_read(data, off, &elen, &erank, &ebytes);
-        if (elen == (uint16_t)len && memcmp(ebytes, bytes, len) == 0) return erank;
+        if (elen == (uint16_t)len && bytes_eq_fast(ebytes, bytes, len)) return erank;
         i = (i + 1) & mask;
     }
     return UINT32_MAX;

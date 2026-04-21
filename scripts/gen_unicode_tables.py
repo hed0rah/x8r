@@ -2,24 +2,48 @@
 """
 generate src/unicode_tables.h from python's unicodedata.
 
-we need three booleans per codepoint, matching fancy-regex's semantics
-as used by tiktoken's cl100k pattern:
+bits per codepoint:
 
-  LETTER    : category starts with 'L' (\\p{L})
-  DIGIT     : category starts with 'N' (\\p{N})
-  SPACE     : codepoint has Unicode White_Space property (\\s)
-  NEWLINE   : U+000A or U+000D  (\\r, \\n)
+  LETTER    : category starts with 'L'          (\\p{L})
+  DIGIT     : category starts with 'N'          (\\p{N})
+  SPACE     : codepoint has Unicode White_Space (\\s)
+  NEWLINE   : U+000A or U+000D                  (\\r, \\n)
+  UPPER     : category Lu or Lt                 (for o200k upper-class)
+  LOWER     : category Ll                       (for o200k lower-class)
+  MARK      : category starts with 'M'          (\\p{M}, for o200k)
+
+UPPER/LOWER/MARK are additional bits needed by the o200k pre-tokenizer.
+cl100k uses only LETTER/DIGIT/SPACE/NEWLINE.
+
+o200k letter classes derived from these bits:
+  upperish ([Lu Lt Lm Lo M])  == (LETTER & ~LOWER) | MARK
+  lowerish ([Ll Lm Lo M])     == (LETTER & ~UPPER) | MARK
 
 packed as a two-stage table:
   stage1[cp >> 8]            -> block index (u16)
   stage2[block][cp & 0xFF]   -> class bits  (u8)
 
-duplicate 256-byte blocks are deduplicated, which cuts stage 2 from
-the full ~1 MiB down to ~15-30 KiB for this three-bit alphabet.
+duplicate 256-byte blocks are deduplicated. more bits means more
+distinct blocks; expect stage2 to grow from ~32 KiB to ~50-80 KiB.
 """
 import sys
 import unicodedata
 from pathlib import Path
+
+# use the `regex` module instead of `unicodedata` so our classification
+# matches what tiktoken's Rust regex engine sees. the Rust `regex` crate
+# and Python's `regex` module both classify unassigned codepoints inside
+# letter blocks (e.g. U+13C88) as \p{L}/\p{Lo}, while Python's
+# `unicodedata.category()` returns 'Cn'. that discrepancy caused real
+# fuzz mismatches on o200k.
+import regex as _rx
+
+_re_L  = _rx.compile(r"\p{L}")
+_re_N  = _rx.compile(r"\p{N}")
+_re_M  = _rx.compile(r"\p{M}")
+_re_Lu = _rx.compile(r"\p{Lu}")
+_re_Lt = _rx.compile(r"\p{Lt}")
+_re_Ll = _rx.compile(r"\p{Ll}")
 
 MAX_CP = 0x110000  # codepoints 0 .. 0x10FFFF
 
@@ -27,6 +51,9 @@ LETTER  = 1 << 0
 DIGIT   = 1 << 1
 SPACE   = 1 << 2
 NEWLINE = 1 << 3
+UPPER   = 1 << 4
+LOWER   = 1 << 5
+MARK    = 1 << 6
 
 # Unicode White_Space property (as of unicode 15). small fixed set.
 WHITE_SPACE = set([
@@ -46,17 +73,23 @@ WHITE_SPACE.update(range(0x2000, 0x200B))  # en/em/etc spaces
 def classify(cp: int) -> int:
     cls = 0
     try:
-        cat = unicodedata.category(chr(cp))
+        ch = chr(cp)
     except ValueError:
-        cat = "Cn"
-    if cat.startswith("L"):
+        return 0
+    if _re_L.match(ch):
         cls |= LETTER
-    if cat.startswith("N"):
+    if _re_N.match(ch):
         cls |= DIGIT
     if cp in WHITE_SPACE:
         cls |= SPACE
     if cp == 0x0A or cp == 0x0D:
         cls |= NEWLINE
+    if _re_Lu.match(ch) or _re_Lt.match(ch):
+        cls |= UPPER
+    if _re_Ll.match(ch):
+        cls |= LOWER
+    if _re_M.match(ch):
+        cls |= MARK
     return cls
 
 
@@ -93,10 +126,17 @@ def emit_header(stage1: list[int], stage2: list[int], out_path: str):
     ap("")
     ap("#include <stdint.h>")
     ap("")
-    ap("#define X8R_CLS_LETTER  0x1u")
-    ap("#define X8R_CLS_DIGIT   0x2u")
-    ap("#define X8R_CLS_SPACE   0x4u")
-    ap("#define X8R_CLS_NEWLINE 0x8u")
+    ap("#define X8R_CLS_LETTER  0x01u")
+    ap("#define X8R_CLS_DIGIT   0x02u")
+    ap("#define X8R_CLS_SPACE   0x04u")
+    ap("#define X8R_CLS_NEWLINE 0x08u")
+    ap("#define X8R_CLS_UPPER   0x10u  /* Lu, Lt (for o200k)      */")
+    ap("#define X8R_CLS_LOWER   0x20u  /* Ll    (for o200k)       */")
+    ap("#define X8R_CLS_MARK    0x40u  /* M*    (for o200k)       */")
+    ap("")
+    ap("/* o200k letter classes derived from the bits above */")
+    ap("#define X8R_CLS_O200K_UPPERISH(c) (((c) & (X8R_CLS_LETTER | X8R_CLS_LOWER)) == X8R_CLS_LETTER || ((c) & X8R_CLS_MARK))")
+    ap("#define X8R_CLS_O200K_LOWERISH(c) (((c) & (X8R_CLS_LETTER | X8R_CLS_UPPER)) == X8R_CLS_LETTER || ((c) & X8R_CLS_MARK))")
     ap("")
     ap(f"#define X8R_UNI_STAGE1_LEN {n_stage1}")
     ap(f"#define X8R_UNI_STAGE2_BLOCKS {n_blocks}")

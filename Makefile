@@ -4,7 +4,7 @@ CPPFLAGS = -Iinclude -Isrc -D_POSIX_C_SOURCE=200809L
 LDFLAGS ?=
 
 BUILD   := build
-LIB_SRC := src/mmap_io.c src/vocab.c src/pretok_scalar.c src/pretok_avx2.c src/bpe.c src/chunk.c
+LIB_SRC := src/mmap_io.c src/vocab.c src/pretok_scalar.c src/pretok_o200k.c src/pretok_avx2.c src/bpe.c src/chunk.c
 LIB_OBJ := $(LIB_SRC:src/%.c=$(BUILD)/%.o)
 LIB_PIC := $(LIB_SRC:src/%.c=$(BUILD)/%.pic.o)
 

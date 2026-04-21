@@ -3,9 +3,10 @@ build/
 bench/profiles/*.data
 bench/profiles/*.data.old
 bench/profiles/*.folded
-bench/profiles/*.svg
 bench/results.json
 bench/corpus/
+bench/bpf/
+resources/
 *.o
 *.a
 *.so

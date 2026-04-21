@@ -65,14 +65,23 @@ static void pretok_sink_build(void *user, size_t start, size_t plen) {
     push_pt(s, start + plen, cum);
 }
 
+/* count-only: no pre-token table, no ranks buffer. bpe_encode with
+ * ranks_out=NULL returns the per-pretoken count without any heap work. */
+typedef struct {
+    const uint8_t *buf;
+    const x8r_vocab *vocab;
+    size_t total;
+} count_ctx;
+
+static void pretok_sink_count(void *user, size_t start, size_t plen) {
+    count_ctx *c = (count_ctx *)user;
+    c->total += x8r_bpe_encode(c->vocab, c->buf + start, plen, NULL, NULL, NULL);
+}
+
 size_t x8r_count_tokens(x8r_ctx *ctx, const uint8_t *buf, size_t len) {
-    build_state s = {0};
-    s.buf = buf; s.len = len; s.vocab = &ctx->vocab;
-    sink_ctx c = { buf, &s };
-    x8r_pretokenize_scalar(buf, len, pretok_sink_build, &c);
-    size_t n = s.ranks_len;
-    free(s.pt_end); free(s.pt_tok_cum); free(s.ranks);
-    return n;
+    count_ctx c = { buf, &ctx->vocab, 0 };
+    ctx->pretokenize(buf, len, pretok_sink_count, &c);
+    return c.total;
 }
 
 /* find largest i with pt_tok_cum[i] <= target; returns -1 if none */
@@ -96,7 +105,7 @@ x8r_status x8r_chunk_buf(x8r_ctx *ctx,
     build_state s = {0};
     s.buf = buf; s.len = len; s.vocab = &ctx->vocab;
     sink_ctx c = { buf, &s };
-    x8r_pretokenize_scalar(buf, len, pretok_sink_build, &c);
+    ctx->pretokenize(buf, len, pretok_sink_build, &c);
 
     size_t total_tokens = s.ranks_len;
 
@@ -187,6 +196,18 @@ x8r_status x8r_ctx_open(const char *vocab_path, x8r_vocab_id vocab, x8r_ctx **ou
     x8r_status st = x8r_vocab_load(vocab_path, &c->vocab);
     if (st != X8R_OK) { free(c); return st; }
     c->id = vocab;
+    /* dispatch pretokenizer based on vocab_id from the blob header.
+     * if the caller passed an explicit vocab enum it overrides (useful
+     * for forcing behavior during tests); otherwise trust the blob. */
+    uint32_t vid = (vocab == X8R_VOCAB_AUTO) ? c->vocab.vocab_id : (uint32_t)vocab;
+    switch (vid) {
+    case X8R_VOCAB_CL100K: c->pretokenize = x8r_pretokenize_scalar; break;
+    case X8R_VOCAB_O200K:  c->pretokenize = x8r_pretokenize_o200k;  break;
+    default:
+        x8r_vocab_close(&c->vocab);
+        free(c);
+        return X8R_E_VOCAB;
+    }
     *out = c;
     return X8R_OK;
 }

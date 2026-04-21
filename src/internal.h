@@ -32,15 +32,25 @@ typedef struct {
     uint32_t table_size;     /* power of 2 */
     uint32_t table_mask;
     uint32_t data_bytes;
+    uint32_t vocab_id;       /* from blob header; picks pretokenizer */
     const uint32_t *table;   /* table_size entries */
     const uint8_t *data;     /* raw blob */
     void *map_base;          /* for munmap */
     size_t map_size;
 } x8r_vocab;
 
+/* pre-tokenizer sink: called once per pre-token boundary */
+typedef void (*x8r_pretok_sink)(void *user, size_t start, size_t len);
+
+/* pretokenizer dispatched by vocab_id: cl100k and o200k use different
+ * regexes. function pointer is bound at ctx_open time. */
+typedef size_t (*x8r_pretok_fn)(const uint8_t *buf, size_t len,
+                                x8r_pretok_sink sink, void *user);
+
 struct x8r_ctx {
     x8r_vocab vocab;
     x8r_vocab_id id;
+    x8r_pretok_fn pretokenize;
 };
 
 /* mmap_io.c */
@@ -53,13 +63,13 @@ void x8r_vocab_close(x8r_vocab *v);
 /* lookup: returns rank for token bytes, or UINT32_MAX if missing */
 uint32_t x8r_vocab_lookup(const x8r_vocab *v, const uint8_t *bytes, size_t len);
 
-/* pretok_scalar.c
- * splits input into pre-tokens per the cl100k regex. calls `sink` for each.
- * returns number of pre-tokens emitted.
- */
-typedef void (*x8r_pretok_sink)(void *user, size_t start, size_t len);
+/* pretok_scalar.c - cl100k pre-tokenizer (scalar + ASCII AVX2 accel) */
 size_t x8r_pretokenize_scalar(const uint8_t *buf, size_t len,
                               x8r_pretok_sink sink, void *user);
+
+/* pretok_o200k.c - o200k pre-tokenizer (scalar + ASCII AVX2 accel) */
+size_t x8r_pretokenize_o200k(const uint8_t *buf, size_t len,
+                             x8r_pretok_sink sink, void *user);
 
 /* pretok_avx2.c: ASCII-only accelerators. return the first position at
  * or after p that either (a) isn't in the target class, or (b) is a

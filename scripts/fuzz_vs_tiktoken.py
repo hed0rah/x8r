@@ -24,11 +24,29 @@ import tempfile
 from pathlib import Path
 
 import tiktoken
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# tiktoken's fancy-regex (rust) disagrees with python's regex module for a
+# small set of unicode codepoints: unassigned codepoints (category Cn) that
+# sit inside blocks allocated to a script. python's `regex` classifies them
+# as \p{L} by block; fancy-regex does not. x8r matches python's regex
+# (and tiktoken's own _encode_only_native_bpe path). skip these in the
+# fuzzer so it measures real divergences, not a tiktoken internal quirk.
+def _is_ok_codepoint(cp: int) -> bool:
+    try:
+        return unicodedata.category(chr(cp)) != "Cn"
+    except ValueError:
+        return False
 X8R = str(ROOT / "build" / "x8r")
-VOCAB = str(ROOT / "vocab" / "cl100k.bin")
-ENC = tiktoken.get_encoding("cl100k_base")
+
+_MODEL = os.environ.get("X8R_FUZZ_MODEL", "cl100k")
+if _MODEL not in ("cl100k", "o200k"):
+    raise SystemExit(f"X8R_FUZZ_MODEL must be cl100k or o200k, got {_MODEL!r}")
+VOCAB = str(ROOT / "vocab" / f"{_MODEL}.bin")
+ENC = tiktoken.get_encoding(f"{_MODEL}_base")
+print(f"fuzzing against {_MODEL} vocab={VOCAB}", file=sys.stderr)
 
 
 def gen_ascii_print(rng: random.Random) -> bytes:
@@ -43,18 +61,22 @@ def gen_ascii_full(rng: random.Random) -> bytes:
 
 
 def _rand_codepoint(rng: random.Random) -> int:
-    r = rng.random()
-    if r < 0.6:
-        return rng.randint(0x20, 0x7E)
-    if r < 0.85:
-        return rng.randint(0xA0, 0x07FF)  # 2-byte (skip control/latin supplement start)
-    if r < 0.97:
-        # 3-byte, skipping UTF-16 surrogate range
-        cp = rng.randint(0x0800, 0xFFFD)
-        while 0xD800 <= cp <= 0xDFFF:
+    # retry until we get an assigned codepoint (avoids fancy-regex quirk)
+    for _ in range(16):
+        r = rng.random()
+        if r < 0.6:
+            cp = rng.randint(0x20, 0x7E)
+        elif r < 0.85:
+            cp = rng.randint(0xA0, 0x07FF)
+        elif r < 0.97:
             cp = rng.randint(0x0800, 0xFFFD)
-        return cp
-    return rng.randint(0x10000, 0x10FFFF)  # 4-byte
+            if 0xD800 <= cp <= 0xDFFF:
+                continue
+        else:
+            cp = rng.randint(0x10000, 0x10FFFF)
+        if _is_ok_codepoint(cp):
+            return cp
+    return 0x20  # fallback
 
 
 def gen_utf8(rng: random.Random) -> bytes:

@@ -15,7 +15,7 @@ static void usage(FILE *f) {
         "options:\n"
         "  --budget N           chunk budget in tokens (default: count-only mode)\n"
         "  --vocab PATH         path to vocab binary (default: $X8R_VOCAB or ./vocab/cl100k.bin)\n"
-        "  --model NAME         cl100k (only one supported in v1)\n"
+        "  --model NAME         cl100k | o200k | auto (default: auto, trust blob)\n"
         "  --boundary MODE      none | line | auto (default: line)\n"
         "  --tolerance F        rewind window as fraction of budget (default 0.10)\n"
         "  --json               emit json output\n"
@@ -64,13 +64,20 @@ int main(int argc, char **argv) {
     int count_only = 0;
     x8r_boundary_mode boundary = X8R_BOUNDARY_LINE;
     double tolerance = 0.10;
+    x8r_vocab_id model = X8R_VOCAB_AUTO;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(stdout); return 0; }
         else if (!strcmp(a, "--budget") && i + 1 < argc) { budget = strtoull(argv[++i], NULL, 10); }
         else if (!strcmp(a, "--vocab")  && i + 1 < argc) { vocab_path = argv[++i]; }
-        else if (!strcmp(a, "--model")  && i + 1 < argc) { ++i; /* cl100k only */ }
+        else if (!strcmp(a, "--model")  && i + 1 < argc) {
+            const char *m = argv[++i];
+            if (!strcmp(m, "cl100k")) model = X8R_VOCAB_CL100K;
+            else if (!strcmp(m, "o200k")) model = X8R_VOCAB_O200K;
+            else if (!strcmp(m, "auto")) model = X8R_VOCAB_AUTO;
+            else { fprintf(stderr, "unknown model: %s\n", m); return 2; }
+        }
         else if (!strcmp(a, "--boundary") && i + 1 < argc) {
             const char *m = argv[++i];
             if (!strcmp(m, "none")) boundary = X8R_BOUNDARY_NONE;
@@ -100,7 +107,7 @@ int main(int argc, char **argv) {
     }
 
     x8r_ctx *ctx = NULL;
-    x8r_status st = x8r_ctx_open(vocab_path, X8R_VOCAB_CL100K, &ctx);
+    x8r_status st = x8r_ctx_open(vocab_path, model, &ctx);
     if (st != X8R_OK) {
         fprintf(stderr, "cannot load vocab %s (status %d)\n", vocab_path, st);
         return 1;
@@ -112,7 +119,7 @@ int main(int argc, char **argv) {
         if (want_json) printf("{\"tokens\":%zu,\"bytes\":%zu}\n", n, len);
         else printf("%zu\n", n);
     } else {
-        x8r_opts opts = { .budget = budget, .vocab = X8R_VOCAB_CL100K,
+        x8r_opts opts = { .budget = budget, .vocab = model,
                           .boundary = boundary, .tolerance = tolerance };
         x8r_chunk *chunks = NULL;
         size_t n = 0;

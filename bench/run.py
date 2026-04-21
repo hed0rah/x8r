@@ -29,14 +29,20 @@ except ImportError:
     print("need: pip install tiktoken", file=sys.stderr)
     sys.exit(2)
 
-ENC = tiktoken.get_encoding("cl100k_base")
+MODEL = os.environ.get("X8R_BENCH_MODEL", "cl100k")
+if MODEL not in ("cl100k", "o200k"):
+    raise SystemExit(f"X8R_BENCH_MODEL must be cl100k or o200k, got {MODEL!r}")
+ENC = tiktoken.get_encoding(f"{MODEL}_base")
+VOCAB = ROOT.parent / "vocab" / f"{MODEL}.bin"
+print(f"benchmarking {MODEL} vs tiktoken {MODEL}_base", file=sys.stderr)
 
 def evict(path: Path):
     subprocess.run([str(DUNCACHE), "-q", "--no-sync", str(path)], check=True)
 
 def time_x8r(path: Path) -> tuple[float, int]:
     t0 = time.perf_counter_ns()
-    r = subprocess.run([str(X8R), "--count", str(path)], capture_output=True, check=True)
+    env = dict(os.environ, X8R_VOCAB=str(VOCAB))
+    r = subprocess.run([str(X8R), "--count", str(path)], capture_output=True, check=True, env=env)
     t1 = time.perf_counter_ns()
     return (t1 - t0) / 1e6, int(r.stdout.strip())
 

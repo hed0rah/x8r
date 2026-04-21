@@ -48,9 +48,15 @@ size_t x8r_bpe_encode(const x8r_vocab *v,
                       uint32_t **ranks_out, size_t *ranks_cap, size_t *ranks_len) {
     if (len == 0) return 0;
 
+    /* count-only mode: ranks_out == NULL means caller only wants the token
+     * count. skips all ranks-buffer growth and the final per-part rank
+     * lookup (we already know part count = token count). */
+    const int count_only = (ranks_out == NULL);
+
     /* fast path: whole pre-token is a single vocab token. common for short runs. */
     uint32_t whole = x8r_vocab_lookup(v, bytes, len);
     if (whole != UINT32_MAX) {
+        if (count_only) return 1;
         if (ensure_cap(ranks_out, ranks_cap, *ranks_len + 1) == (size_t)-1) return 0;
         (*ranks_out)[(*ranks_len)++] = whole;
         return 1;
@@ -118,21 +124,26 @@ size_t x8r_bpe_encode(const x8r_vocab *v,
     /* emit remaining parts as tokens */
     size_t emitted = 0;
     int32_t cur = 0;
-    while (cur >= 0) {
-        uint32_t rank = x8r_vocab_lookup(v, bytes + parts[cur].start, parts[cur].len);
-        if (rank == UINT32_MAX) {
-            /* unknown single byte: this indicates a vocab problem.
-             * fallback: emit per-byte with 0 rank to keep the stream
-             * flowing. golden tests will fail, which is what we want. */
-            rank = 0;
+    if (count_only) {
+        /* count-only: skip per-part vocab_lookup (we only need the count) */
+        while (cur >= 0) { emitted++; cur = parts[cur].next; }
+    } else {
+        while (cur >= 0) {
+            uint32_t rank = x8r_vocab_lookup(v, bytes + parts[cur].start, parts[cur].len);
+            if (rank == UINT32_MAX) {
+                /* unknown single byte: this indicates a vocab problem.
+                 * fallback: emit per-byte with 0 rank to keep the stream
+                 * flowing. golden tests will fail, which is what we want. */
+                rank = 0;
+            }
+            if (ensure_cap(ranks_out, ranks_cap, *ranks_len + 1) == (size_t)-1) {
+                if (heap) free(parts);
+                return emitted;
+            }
+            (*ranks_out)[(*ranks_len)++] = rank;
+            emitted++;
+            cur = parts[cur].next;
         }
-        if (ensure_cap(ranks_out, ranks_cap, *ranks_len + 1) == (size_t)-1) {
-            if (heap) free(parts);
-            return emitted;
-        }
-        (*ranks_out)[(*ranks_len)++] = rank;
-        emitted++;
-        cur = parts[cur].next;
     }
 
     if (heap) free(parts);
