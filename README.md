@@ -143,6 +143,13 @@ same way `regex` does).
 - differential fuzzer (`scripts/fuzz_vs_tiktoken.py`) with five flavors
   and a bisect-shrinker. 10k cases clean on both vocabs.
 - golden token counts match tiktoken exactly on all bench corpora.
+- **linux kernel tree**: tokenized every non-binary file in a shallow
+  clone of `torvalds/linux` (93,849 files, 487M tokens across `.c`,
+  `.h`, `.rst`, `.dts`, `.yaml`, assembly, shell, python, rust, etc)
+  and compared against `tiktoken.encode_ordinary` with `o200k_base`.
+  zero mismatches.
+
+![x8r vs tiktoken on the linux kernel tree](bench/profiles/linux_kernel_scatter.png)
 
 known divergence: a tiny set of unicode codepoints (unassigned, inside
 script blocks) where tiktoken's public `encode_ordinary` and its own
