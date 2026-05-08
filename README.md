@@ -215,4 +215,4 @@ urgent.
 
 ## license
 
-MIT. see `LICENSE`.
+x8r © 2026 by hed0rah is licensed under CC BY-NC-ND 4.0
