@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>x8r / architecture and hot-path deep dive</title>
+<meta name="description" content="x8r is a native byte-level BPE tokenizer and chunker. bit-exact vs tiktoken, 7-16x faster on warm inputs. C11, AVX2, cl100k and o200k.">
+<meta property="og:title" content="x8r whitepaper">
+<meta property="og:type" content="article">
+<style>
+:root{--paper:#fcfcfa;--ink:#151515;--muted:#64625c;--line:#d8d5ce;--soft:rgba(0,0,0,0.012);--bigstone:#1A2F3F;--flamingo:#EC503A;--geraldine:#F78F82;--gd-soft:rgba(247,143,130,0.10);--fl-soft:rgba(236,80,58,0.08);--bs-soft:rgba(26,47,63,0.05);--ex-bg:#faf8f3}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;color:var(--ink);background:var(--paper);font-family:"Iowan Old Style","Palatino Linotype","Book Antiqua",Georgia,serif;line-height:1.45}
+.page{max-width:1240px;margin:0 auto;padding:24px 16px 44px}
+.sheet{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:26px;align-items:start}
+.paper{min-width:0;border-top:2px solid var(--bigstone);border-bottom:1px solid var(--line);padding:20px 0 24px}
+.eyebrow{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.14em;color:var(--flamingo);font-weight:600}
+h1,h2,h3{margin:0;font-weight:600;line-height:1.2}
+h1{font-size:clamp(1.55rem,2.1vw,1.9rem);letter-spacing:-0.02em;margin-bottom:6px;color:var(--bigstone)}
+h2{font-size:0.92rem;margin-top:22px;margin-bottom:8px;padding-top:12px;border-top:1px solid var(--line);color:var(--bigstone);text-transform:uppercase;letter-spacing:0.05em}
+h3{font-size:0.86rem;margin:10px 0 5px;color:var(--ink)}
+p{margin:0 0 8px;font-size:0.86rem}
+code{font-family:"SFMono-Regular","SF Mono",Menlo,Consolas,monospace;font-size:0.85em;background:rgba(217,215,209,0.30);padding:0.04rem 0.22rem;border-radius:1px}
+.chip{display:inline-block;margin:0 3px 3px 0;padding:1px 6px;border:1px solid var(--line);border-radius:2px;font-size:0.69rem;letter-spacing:0.02em;color:var(--muted)}
+.chip.flamingo{border-color:var(--flamingo);color:var(--flamingo);background:var(--fl-soft)}
+.term{cursor:pointer;border-bottom:1px dotted var(--bigstone);color:var(--bigstone);transition:.1s;padding:0 1px;font-weight:500}
+.term:hover,.term:focus-visible,.term.is-active{background:var(--gd-soft);color:var(--flamingo);border-bottom-color:var(--flamingo);outline:none}
+.lede{font-size:0.9rem;color:#242424;margin:6px 0 14px}
+.spec-line{display:inline-block;padding:2px 8px;border:1px solid var(--bigstone);background:var(--bs-soft);font-family:"SFMono-Regular",monospace;font-size:0.74rem;color:var(--bigstone);margin-right:6px;letter-spacing:0.03em}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:6px;margin:10px 0 16px}
+.stat{padding:8px 10px;border:1px solid var(--line);background:var(--paper)}
+.stat .num{font-family:"Iowan Old Style",Georgia,serif;font-size:1.45rem;font-weight:600;color:var(--bigstone);line-height:1.1}
+.stat .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-top:2px}
+.compare{width:100%;border-collapse:collapse;font-size:0.82rem;margin:6px 0 10px}
+.compare th,.compare td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+.compare th{background:var(--bs-soft);color:var(--bigstone);font-weight:600;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em}
+.compare td.good{color:var(--bigstone)}.compare td.bad{color:var(--flamingo)}.compare td.note{color:var(--muted);font-style:italic;font-size:0.78rem}
+.compare td code{font-size:0.78em}
+.compare td.num{font-family:"SFMono-Regular",monospace;font-size:0.8rem;text-align:right;font-variant-numeric:tabular-nums}
+.comp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(195px,1fr));gap:6px;margin:6px 0 12px}
+.comp{padding:7px 10px;border:1px solid var(--line);background:var(--paper);transition:.15s}
+.comp:hover{border-color:var(--flamingo);background:var(--fl-soft)}
+.comp .name{font-size:0.88rem;font-weight:600;color:var(--bigstone);margin-bottom:1px}
+.comp .role{font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;font-family:"SFMono-Regular",monospace}
+.comp .desc{font-size:0.76rem;margin-top:3px;color:#2a2a2a;line-height:1.4}
+.bul{list-style:none;padding:0;margin:4px 0 10px}
+.bul li{padding:2px 0 2px 16px;font-size:0.84rem;position:relative;line-height:1.5;color:#222}
+.bul li::before{content:"·";position:absolute;left:5px;color:var(--flamingo);font-weight:700;font-size:1.1rem;line-height:1}
+.bul li strong{color:var(--bigstone);font-weight:600}
+.bul li code{font-size:0.82em}
+.wireblock{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:0.75rem;background:var(--bigstone);color:#cbd2da;padding:10px 12px;margin:8px 0 12px;line-height:1.55;overflow-x:auto;white-space:pre;border-left:3px solid var(--flamingo)}
+.wireblock .kw{color:#f5b06b}.wireblock .hdr{color:#5cc0b0}.wireblock .cm{color:#7d8a99;font-style:italic}.wireblock .num{color:#e0b060}.wireblock .reg{color:#b9a3e3}
+.figure{margin:10px 0 14px;padding:0;border:1px solid var(--line);background:var(--paper)}
+.figure img{display:block;width:100%;height:auto}
+.figure .cap{padding:6px 10px;font-size:0.74rem;color:var(--muted);font-style:italic;border-top:1px solid var(--line);background:var(--ex-bg)}
+.refs{font-size:0.78rem;line-height:1.55;margin:6px 0}
+.refs .ref-row{display:grid;grid-template-columns:140px 1fr;gap:10px;padding:3px 0;border-bottom:1px dashed var(--line)}
+.refs .ref-row:last-child{border-bottom:none}
+.refs .ref-row .key{font-family:"SFMono-Regular",monospace;font-size:0.72rem;color:var(--bigstone);font-weight:600;text-transform:uppercase;letter-spacing:0.03em}
+.refs .ref-row .val a{color:var(--flamingo);text-decoration:none;border-bottom:1px dotted var(--flamingo)}
+.refs .ref-row .val a:hover{background:var(--fl-soft)}
+.refs .ref-row .val .desc{color:var(--muted);font-style:italic;font-size:0.74rem;margin-left:6px}
+.margin{position:sticky;top:18px;border-top:2px solid var(--bigstone);padding-top:10px;font-size:0.82rem;color:var(--muted)}
+.margin-card{border:1px solid var(--line);border-left:3px solid var(--flamingo);background:rgba(0,0,0,0.012);padding:12px 12px 10px;min-height:340px}
+.margin h3{font-size:0.9rem;margin-bottom:6px;color:var(--bigstone)}
+.margin p{margin-bottom:7px;font-size:0.8rem}
+.margin-meta{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;margin:7px 0 8px;padding:7px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:#2d2d2a}
+.margin-meta strong{display:block;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);margin-bottom:1px}
+.margin-meta span{font-size:0.8rem}
+.margin-code{display:inline-block;margin-top:2px;margin-bottom:6px;color:var(--flamingo)}
+.margin-section{margin-top:10px}
+.margin-section .label{font-size:9px;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:3px}
+.margin-section ul{margin:0;padding:0;list-style:none}
+.margin-section li{padding:2px 0;border-top:1px solid rgba(216,213,206,0.7);font-size:0.76rem;color:#2a2a2a;font-family:"SFMono-Regular",Menlo,Consolas,monospace}
+.margin-section li:first-child{border-top:none}
+.margin-section .more{color:var(--muted);font-style:italic;font-family:inherit}
+.margin-section a{color:var(--flamingo);text-decoration:none;border-bottom:1px dotted var(--flamingo);font-family:inherit;word-break:break-word}
+.margin-section a:hover{background:var(--fl-soft);color:var(--bigstone)}
+.margin-section li.link-item{white-space:normal;font-family:inherit;padding:4px 0}
+.margin-section li.link-item .src{display:block;font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-top:1px;font-family:"SFMono-Regular",monospace}
+.margin-hint{font-size:0.72rem;color:var(--muted);margin-top:12px;padding-top:7px;border-top:1px solid var(--line)}
+.margin-hint kbd{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:0.7rem;padding:0 4px;border:1px solid var(--line);border-radius:2px;background:var(--soft)}
+.footer{margin-top:24px;padding-top:10px;border-top:1px solid var(--line);color:var(--muted);font-size:0.76rem}
+.footer .signoff{color:var(--bigstone);font-weight:600;letter-spacing:0.05em}
+@media (max-width:980px){.sheet{grid-template-columns:1fr}.margin{position:static;order:2;border-top:1px solid var(--line)}.comp-grid,.stat-grid{grid-template-columns:1fr}.compare{font-size:0.76rem}.refs .ref-row{grid-template-columns:100px 1fr}}
+@media print{body{background:#fff}.margin,.term{cursor:default}.term{border-bottom:none;color:var(--bigstone)!important;background:transparent!important}}
+</style></head><body><div class="page"><div class="sheet">
+
+<article class="paper">
+
+<p class="eyebrow">Whitepaper / x8r v0.3</p>
+<h1>a fast byte-level BPE tokenizer and chunker, in C</h1>
+<p class="lede">
+<span class="spec-line">C11</span><span class="spec-line">AVX2</span><span class="spec-line">cl100k + o200k</span><span class="spec-line">linux x86_64</span>
+bit-exact vs tiktoken on 487M tokens of real source code. 7-16x faster on warm inputs. single-threaded, mmap-backed, no python. tool for LLM agents that call a tokenizer per file and feel it.
+</p>
+
+<div class="stat-grid">
+  <div class="stat"><div class="num">7-16x</div><div class="lbl">warm speedup vs tiktoken</div></div>
+  <div class="stat"><div class="num">93,849</div><div class="lbl">linux kernel files validated</div></div>
+  <div class="stat"><div class="num">487M</div><div class="lbl">tokens, zero mismatches</div></div>
+  <div class="stat"><div class="num">120 KB</div><div class="lbl">stripped binary</div></div>
+  <div class="stat"><div class="num">~38%</div><div class="lbl">self-time in vocab hash</div></div>
+  <div class="stat"><div class="num">0 deps</div><div class="lbl">libc only</div></div>
+</div>
+
+<h2>Why this exists</h2>
+<p>
+LLM coding agents read files in <em>token budgets</em>, not bytes or lines. Every <code>Read</code> tool call has to answer two questions: how many tokens is this file, and if i can only afford N, where do i cut without slicing through a function? Today both questions are answered by python <code>tiktoken</code> in a subprocess loop, which is fine for one-shot use and painful when scanning a monorepo.
+</p>
+<p>
+x8r is a single-purpose native tool that does this job and nothing else. it implements <span class="term" data-term="bpe">byte-level BPE</span> tokenization compatible with OpenAI's <span class="term" data-term="cl100k">cl100k</span> and <span class="term" data-term="o200k">o200k</span> vocabularies, plus a <span class="term" data-term="chunker">budget-aware chunker</span> on top. the contract is: bytes in, byte offsets and token counts out, bit-exact against tiktoken.
+</p>
+
+<h2>Pipeline</h2>
+<p>five subsystems, each isolated to its own translation unit:</p>
+<div class="comp-grid">
+  <div class="comp"><span class="term" data-term="mmap"><span class="name">mmap_io</span></span><div class="role">input</div><div class="desc">open + fstat + mmap with <span class="term" data-term="madvise">MADV_SEQUENTIAL</span>. stdin gets a growable buffer.</div></div>
+  <div class="comp"><span class="term" data-term="pretokenizer"><span class="name">pretokenizer</span></span><div class="role">byte → pretokens</div><div class="desc">classify bytes into letter / digit / space / punct / newline. AVX2 fast path for ASCII, scalar fallback for UTF-8.</div></div>
+  <div class="comp"><span class="term" data-term="vocab-hash"><span class="name">vocab table</span></span><div class="role">bytes → rank</div><div class="desc">flat mmap'd hash. ~200K tokens. FNV-1a, open-addressing, load 0.38.</div></div>
+  <div class="comp"><span class="term" data-term="bpe"><span class="name">bpe merge</span></span><div class="role">pretok → tokens</div><div class="desc">priority-queue merge per pretok. small pretoks (≤4 bytes) skip the loop entirely.</div></div>
+  <div class="comp"><span class="term" data-term="chunker"><span class="name">chunker</span></span><div class="role">tokens → chunks</div><div class="desc">binary search the cumulative token array, walk back to a clean boundary inside tolerance.</div></div>
+</div>
+
+<h2>Pretokenization</h2>
+<p>
+Pretokenization is the regex pass that splits raw bytes into "pretokens" before BPE. tiktoken specifies a fixed regex per vocab. for cl100k it looks like <code>'s|'t|'re| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+</code>. for o200k it adds <span class="term" data-term="camelcase-rule">CamelCase splitting</span>, drops the standalone contraction rule in favor of a trailing suffix on letter runs, and absorbs <code>/</code> into trailing-punct class.
+</p>
+<p>
+Most BPE implementations run this as a real regex engine. we don't need to. the character classes are disjoint and recognisable from a byte-level table. for ASCII bytes that's a 256-entry lookup; for UTF-8 codepoints it's a <span class="term" data-term="two-stage-table">two-stage Unicode class table</span> generated offline.
+</p>
+<p>
+The hot path scans 32 bytes at a time using <span class="term" data-term="avx2">AVX2</span>, with <span class="term" data-term="pshufb">PSHUFB</span> sitting in reserve for the next round of work:
+</p>
+<div class="wireblock"><span class="cm">// first non-ASCII-letter or first non-ASCII byte in [p, n)</span>
+<span class="kw">size_t</span> x8r_scan_ascii_letter(<span class="kw">const uint8_t</span> *b, <span class="kw">size_t</span> n, <span class="kw">size_t</span> p) {
+    <span class="kw">while</span> (p + 32 &lt;= n) {
+        <span class="reg">__m256i</span> v = _mm256_loadu_si256((<span class="kw">const</span> <span class="reg">__m256i</span>*)(b + p));
+
+        <span class="cm">// detect any byte &gt;= 0x80 (non-ASCII)</span>
+        <span class="kw">int</span> non_ascii_mask = <span class="hdr">_mm256_movemask_epi8</span>(v);
+
+        <span class="cm">// (c|0x20)-'a' &lt; 26 in the signed-AVX2 domain</span>
+        <span class="reg">__m256i</span> lc = _mm256_or_si256(v, _mm256_set1_epi8(0x20));
+        <span class="reg">__m256i</span> shifted = _mm256_sub_epi8(lc,
+                          _mm256_set1_epi8((<span class="kw">char</span>)(0x80 + 'a')));
+        <span class="reg">__m256i</span> in_range = _mm256_cmpgt_epi8(
+            _mm256_set1_epi8((<span class="kw">char</span>)(-0x80 + 26)), shifted);
+        <span class="kw">int</span> letter_mask = <span class="hdr">_mm256_movemask_epi8</span>(in_range);
+
+        <span class="cm">// first not-a-letter OR non-ASCII byte</span>
+        <span class="reg">uint32_t</span> bad = (<span class="reg">uint32_t</span>)(~letter_mask)
+                     | (<span class="reg">uint32_t</span>)non_ascii_mask;
+        <span class="kw">if</span> (bad) <span class="kw">return</span> p + (<span class="kw">size_t</span>)__builtin_ctz(bad);
+        p += 32;
+    }
+    <span class="kw">return</span> p;  <span class="cm">// tail goes scalar</span>
+}</div>
+<p>
+the moment a non-ASCII byte appears in the window, we bail to the scalar UTF-8 path for that window only. on real source code this happens rarely, so the AVX2 path stays hot.
+</p>
+
+<h2>Unicode classification</h2>
+<p>
+Non-ASCII codepoints need a class lookup. we generate <code>src/unicode_tables.h</code> at build time as a <span class="term" data-term="two-stage-table">two-stage table</span>: <code>stage1[cp&gt;&gt;8]</code> indexes into <code>stage2[block][cp&amp;0xff]</code>, with duplicate 256-byte blocks deduplicated. the result is ~39 KiB of static data with O(1) per-codepoint class.
+</p>
+<p>
+The classifier is generated from python's <code>regex</code> module, not <code>unicodedata</code>. this distinction matters: tiktoken uses the rust <span class="term" data-term="fancy-regex">fancy-regex</span> crate, which classifies a small set of unassigned-but-block-allocated codepoints (e.g. U+18D9E) as <code>\p{L}</code>. python's <code>unicodedata.category()</code> calls them <code>Cn</code>. python's <code>regex</code> module agrees with fancy-regex. we picked the right oracle.
+</p>
+
+<h2>Vocab hash</h2>
+<p>
+The vocab is ~200K tokens. each token has a byte sequence (typically 1-6 bytes) and a 32-bit rank. we mmap a flat blob produced offline by <code>scripts/dump_cl100k.py</code> / <code>scripts/dump_o200k.py</code>: a power-of-two open-addressed hash table with the keys stored inline in 16-byte buckets, plus a small overflow region for longer keys. <span class="term" data-term="fnv1a">FNV-1a 32-bit hash</span>, <span class="term" data-term="open-addressing">open addressing</span> with <span class="term" data-term="linear-probing">linear probing</span>, load factor 0.38, average probe length ~1.3.
+</p>
+<p>
+Why not <span class="term" data-term="swisstables">swisstables</span> or a perfect hash? both are real upgrades. we left them on the table because the existing layout is already cache-friendly enough: at load 0.38 with linear probing, ~85% of probes terminate on the first bucket and the next probe is the next cache line. the upside-to-complexity ratio for a static, immutable, page-shared 200K-entry table is modest. we'll revisit if the profile changes.
+</p>
+
+<h2>BPE merge</h2>
+<p>
+For each pretoken, classical BPE: start with one token per byte, repeatedly merge the lowest-rank adjacent pair until no merges remain. inherently serial within a pretoken, embarrassingly parallel across them.
+</p>
+<p>
+Two practical optimizations:
+</p>
+<ul class="bul">
+<li><strong>direct lookup for short pretokens.</strong> 1-4 byte pretokens cover most of the corpus on real code (operators, single-char identifiers, whitespace runs). these get a single <code>x8r_vocab_lookup</code> against the byte sequence as a whole. if it hits, emit the rank directly and skip the merge loop.</li>
+<li><strong>priority queue, not a sort.</strong> the merge loop maintains a doubly-linked list of tokens and a per-pair rank heap. a merge updates two neighbours and re-pushes their adjusted pairs. amortized cost stays sub-quadratic without resorting.</li>
+</ul>
+<p>
+This stage is ~19% of self-time per the flamegraph. tiktoken's <code>core_bpe.rs</code> uses the same shape. we are unlikely to beat it asymptotically; cycle savings here come from cache layout and short-key fast paths.
+</p>
+
+<h2>Boundary-aware chunking</h2>
+<p>
+the chunker takes a budget B and produces <code>[start, end)</code> intervals each ≤ B tokens. the trick is to land on a clean boundary instead of mid-function.
+</p>
+<ul class="bul">
+<li>build a cumulative token-count array as a side effect of pretokenization.</li>
+<li>binary-search for the largest prefix with ≤ B tokens.</li>
+<li>walk back through boundary candidates within <code>tolerance * B</code> tokens, taking the best kind: <code>block</code> &gt; <code>blank</code> &gt; <code>line</code> &gt; <code>hard</code>.</li>
+<li>emit, advance the start, repeat.</li>
+</ul>
+<p>
+Currently boundaries are line-based with simple block/blank detection; tree-sitter syntax mode is sketched but disabled. tolerance defaults to 10% of the budget, which is enough on real source files to land on a brace or a blank line almost always.
+</p>
+
+<h2>Profile</h2>
+<p>
+<span class="term" data-term="flamegraph">flamegraph</span> from a 21 MiB mixed-corpus run, perf record at 1999 Hz, frame pointers on, Zen 4:
+</p>
+<div class="figure">
+  <a href="../bench/profiles/x8r_v03.svg" target="_blank" rel="noopener"><img src="../bench/profiles/x8r_v03.svg" alt="x8r flamegraph" /></a>
+  <div class="cap">click to open the interactive flamegraph in a new tab</div>
+</div>
+<table class="compare">
+<thead><tr><th>function</th><th>self time</th><th>what it does</th></tr></thead>
+<tbody>
+<tr><td><code>x8r_vocab_lookup</code></td><td class="num">38.07%</td><td>FNV-1a + open-addressing probe</td></tr>
+<tr><td><code>x8r_bpe_encode</code></td><td class="num">19.24%</td><td>per-pretok merge loop</td></tr>
+<tr><td><code>match_upperstar_lowerplus</code></td><td class="num">16.93%</td><td>o200k CamelCase state machine, alt 1</td></tr>
+<tr><td><code>x8r_pretokenize_o200k</code></td><td class="num">15.89%</td><td>top-level pretok driver</td></tr>
+<tr><td><code>match_upperplus_lowerstar</code></td><td class="num">4.74%</td><td>o200k CamelCase state machine, alt 2</td></tr>
+<tr><td><code>pretok_sink_count</code></td><td class="num">2.44%</td><td>token-count accumulator callback</td></tr>
+<tr><td><span class="term" data-term="vpmovmskb"><code>x8r_scan_ascii_space</code></span></td><td class="num">2.06%</td><td>AVX2 whitespace scan</td></tr>
+</tbody>
+</table>
+<p>
+useful mental model: <strong>pretok work ~40%, vocab hash ~38%, merge loop ~19%</strong>. the AVX2 ASCII fast paths are already too small to be the bottleneck. the highest-leverage future targets are the vocab hash (swisstables-style group probe) and the o200k CamelCase machine (jump tables, branchless backtracking).
+</p>
+
+<h2>Speed</h2>
+<p>
+warm, single-threaded, vs <code>tiktoken.encode_ordinary</code> with <code>o200k_base</code>, on a Zen 4. cold numbers in <code>bench/results.json</code>.
+</p>
+<table class="compare">
+<thead><tr><th>file</th><th>size</th><th>x8r</th><th>tiktoken</th><th>speedup</th></tr></thead>
+<tbody>
+<tr><td>ascii_code_large</td><td class="num">1 MiB</td><td class="num">18.9 ms</td><td class="num">221.7 ms</td><td class="num"><strong>11.8x</strong></td></tr>
+<tr><td>json_large</td><td class="num">1 MiB</td><td class="num">13.9 ms</td><td class="num">227.2 ms</td><td class="num"><strong>16.3x</strong></td></tr>
+<tr><td>markdown_large</td><td class="num">1 MiB</td><td class="num">17.6 ms</td><td class="num">172.6 ms</td><td class="num"><strong>9.8x</strong></td></tr>
+<tr><td>utf8_prose_large</td><td class="num">1 MiB</td><td class="num">15.9 ms</td><td class="num">114.6 ms</td><td class="num"><strong>7.2x</strong></td></tr>
+</tbody>
+</table>
+<p>
+the smallest speedup is on UTF-8 prose, which is exactly where the scalar UTF-8 path runs constantly. that's the corpus where <span class="term" data-term="simd-utf8">SIMD UTF-8 classification</span> would matter most.
+</p>
+
+<h2>Correctness</h2>
+<p>three independent oracles agree:</p>
+<ul class="bul">
+<li><strong>differential fuzzer</strong> (<code>scripts/fuzz_vs_tiktoken.py</code>): five flavors (ascii_print, ascii_full, utf8_mixed, realcode, edge), 10,000 cases per vocab. bisect-shrinker on disagreement. 0 mismatches on cl100k and o200k.</li>
+<li><strong>golden corpus</strong>: 12 hand-picked files (code, json, markdown, prose) at three sizes. token counts match tiktoken exactly.</li>
+<li><strong>linux kernel tree</strong>: every non-binary file in a shallow clone of <code>torvalds/linux</code> tokenized with both tools. 93,849 files, 487 million tokens, byte-exact agreement.</li>
+</ul>
+<div class="figure">
+  <img src="../bench/profiles/linux_kernel_scatter.png" alt="x8r vs tiktoken scatter on the linux kernel" />
+  <div class="cap">x8r vs tiktoken o200k_base, every non-binary file in the linux kernel tree. red line is y=x. every dot lands on it across six orders of magnitude.</div>
+</div>
+<p>
+one known divergence, documented inline in <code>src/pretok_o200k.c</code>: a tiny set of unicode codepoints (unassigned, in script-allocated blocks) where tiktoken's public <code>encode_ordinary</code> and its own internal <code>_encode_only_native_bpe</code> disagree with each other. x8r matches the latter. real text never hits this.
+</p>
+
+<h2>Trade-offs and what's not done</h2>
+<table class="compare">
+<thead><tr><th>topic</th><th>verdict</th><th>reasoning</th></tr></thead>
+<tbody>
+<tr><td>SIMD UTF-8 decode + classify</td><td class="note">later</td><td>biggest improvement on prose corpora. needs lemire/keiser validator + PSHUFB-to-class for 2-byte sequences. ~1 week of work.</td></tr>
+<tr><td>swisstables vocab hash</td><td class="note">maybe</td><td>would shrink the 38% bucket. complexity vs win is unclear at load 0.38 with linear probing already at ~1.3 probes.</td></tr>
+<tr><td>perfect hashing (CHD/BBHash)</td><td class="note">maybe</td><td>vocab is static and immutable. theoretically removes the probe loop entirely. binary-size cost ~2 KiB metadata.</td></tr>
+<tr><td>AVX-512 path</td><td class="note">maybe</td><td>Zen 4 double-pumps AVX-512. ~1.4-1.8x on the pretok scan. AMD's port pressure caveats apply.</td></tr>
+<tr><td>threading inside one file</td><td class="bad">no</td><td>against the unix philosophy. callers should parallelise across files via <code>xargs -P</code> or a thread pool around <code>libx8r.so</code>.</td></tr>
+<tr><td>JIT'ing the regex</td><td class="bad">no</td><td>libgccjit setup latency would dwarf the savings on small files.</td></tr>
+<tr><td>GPU offload</td><td class="bad">no</td><td>PCIe round-trip + kernel launch &gt; entire CPU runtime on 1 MiB inputs.</td></tr>
+<tr><td>ARM / macOS / Windows</td><td class="bad">no</td><td>linux x86_64 only by design. AVX2 is the baseline. NEON port is feasible but unscoped.</td></tr>
+</tbody>
+</table>
+
+<h2>Build and API</h2>
+<p>libc only. <code>make</code> produces:</p>
+<ul class="bul">
+<li><code>build/x8r</code> - cli, ~120 KB stripped</li>
+<li><code>build/libx8r.so</code> - shared lib for in-process use</li>
+<li><code>build/libx8r.a</code> - static lib</li>
+</ul>
+<div class="wireblock"><span class="cm">// minimal c usage</span>
+<span class="hdr">#include</span> <span class="num">"x8r.h"</span>
+
+x8r_ctx *ctx;
+x8r_ctx_open(<span class="num">"vocab/o200k.bin"</span>, X8R_VOCAB_AUTO, &amp;ctx);
+
+<span class="cm">// just count</span>
+<span class="kw">size_t</span> n = x8r_count_tokens(ctx, buf, len);
+
+<span class="cm">// or chunk</span>
+x8r_opts opts = { .budget = <span class="num">4000</span>,
+                  .boundary = X8R_BOUNDARY_LINE,
+                  .tolerance = <span class="num">0.10</span> };
+x8r_chunk *chunks; <span class="kw">size_t</span> nchunks;
+x8r_chunk_buf(ctx, buf, len, &amp;opts, &amp;chunks, &amp;nchunks);
+
+x8r_chunks_free(chunks);
+x8r_ctx_close(ctx);</div>
+
+<h2>Source layout</h2>
+<table class="compare">
+<thead><tr><th>path</th><th>contents</th></tr></thead>
+<tbody>
+<tr><td><code>include/x8r.h</code></td><td>public C ABI</td></tr>
+<tr><td><code>src/main.c</code></td><td>cli entry, arg parsing, output formatting</td></tr>
+<tr><td><code>src/chunk.c</code></td><td>public api, budget search, boundary picker</td></tr>
+<tr><td><code>src/pretok_scalar.c</code></td><td>cl100k pretokenizer, scalar fallback</td></tr>
+<tr><td><code>src/pretok_avx2.c</code></td><td>AVX2 ASCII letter / space fast paths</td></tr>
+<tr><td><code>src/pretok_o200k.c</code></td><td>o200k pretokenizer with CamelCase state machine</td></tr>
+<tr><td><code>src/bpe.c</code></td><td>merge loop, vocab hash probe</td></tr>
+<tr><td><code>src/vocab.c</code></td><td>vocab load + mmap</td></tr>
+<tr><td><code>src/mmap_io.c</code></td><td>mmap + madvise wrapper</td></tr>
+<tr><td><code>src/unicode_tables.h</code></td><td>generated, codepoint class bits</td></tr>
+<tr><td><code>vocab/cl100k.bin</code></td><td>199K tokens, ~2.2 MiB</td></tr>
+<tr><td><code>vocab/o200k.bin</code></td><td>200K tokens, ~4.5 MiB</td></tr>
+<tr><td><code>scripts/</code></td><td>vocab dump, unicode table gen, fuzzer</td></tr>
+<tr><td><code>bench/</code></td><td>cold + warm bench harness</td></tr>
+</tbody>
+</table>
+
+<h2>References</h2>
+<div class="refs">
+  <div class="ref-row"><span class="key">tiktoken</span><span class="val"><a href="https://github.com/openai/tiktoken" target="_blank" rel="noopener">openai/tiktoken</a><span class="desc">reference behaviour</span></span></div>
+  <div class="ref-row"><span class="key">BPE paper</span><span class="val"><a href="https://arxiv.org/abs/1508.07909" target="_blank" rel="noopener">Sennrich, Haddow, Birch (2016)</a><span class="desc">neural MT with subword units</span></span></div>
+  <div class="ref-row"><span class="key">karpathy</span><span class="val"><a href="https://www.youtube.com/watch?v=zduSFxRajkE" target="_blank" rel="noopener">Let's build the GPT Tokenizer</a><span class="desc">end-to-end BPE walkthrough</span></span></div>
+  <div class="ref-row"><span class="key">simd lookup</span><span class="val"><a href="http://0x80.pl/notesen/2018-10-18-simd-byte-lookup.html" target="_blank" rel="noopener">Wojciech Muła - SIMD byte lookup</a><span class="desc">PSHUFB as a class LUT</span></span></div>
+  <div class="ref-row"><span class="key">utf-8 simd</span><span class="val"><a href="https://lemire.me/blog/2020/10/20/ridiculously-fast-unicode-utf-8-validation/" target="_blank" rel="noopener">Lemire - Ridiculously fast UTF-8 validation</a><span class="desc">three PSHUFBs per 32 bytes</span></span></div>
+  <div class="ref-row"><span class="key">utf-8 paper</span><span class="val"><a href="https://arxiv.org/abs/2010.03090" target="_blank" rel="noopener">Lemire &amp; Keiser (2020)</a><span class="desc">Validating UTF-8 In Less Than One Instruction Per Byte</span></span></div>
+  <div class="ref-row"><span class="key">swisstable talk</span><span class="val"><a href="https://www.youtube.com/watch?v=ncHmEUmJZf4" target="_blank" rel="noopener">Kulukundis - Designing a Fast, Efficient, Cache-friendly Hash Table</a><span class="desc">CppCon 2017</span></span></div>
+  <div class="ref-row"><span class="key">abseil</span><span class="val"><a href="https://abseil.io/about/design/swisstables" target="_blank" rel="noopener">Abseil - Swiss Tables</a><span class="desc">production swisstable design notes</span></span></div>
+  <div class="ref-row"><span class="key">simdjson</span><span class="val"><a href="https://github.com/simdjson/simdjson" target="_blank" rel="noopener">simdjson/simdjson</a><span class="desc">stage 1 / stage 2 SIMD parsing</span></span></div>
+  <div class="ref-row"><span class="key">agner fog</span><span class="val"><a href="https://www.agner.org/optimize/" target="_blank" rel="noopener">Agner Fog - Optimization manuals</a><span class="desc">microarchitecture, instruction tables</span></span></div>
+  <div class="ref-row"><span class="key">x8r repo</span><span class="val"><a href="https://github.com/hed0rah/x8r" target="_blank" rel="noopener">github.com/hed0rah/x8r</a><span class="desc">source, vocab dumps, benches</span></span></div>
+</div>
+
+<div class="footer">
+  <span class="signoff">x8r whitepaper</span> &middot; v0.3 &middot; bit-exact vs tiktoken cl100k_base + o200k_base &middot; linux x86_64 + AVX2 &middot; MIT
+</div>
+
+</article>
+
+<aside class="margin"><div class="margin-card">
+<p class="margin-code" style="display:block;font-size:9px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted)">Reference Inspector</p>
+<h3 id="m-title">Hover any underlined term</h3>
+<code class="margin-code" id="m-code">—</code>
+<p id="m-body">Move the cursor over any dotted-underline term to load details: role, examples, related concepts, notes, and authoritative source links.</p>
+<div class="margin-meta" id="m-meta"></div>
+<div class="margin-section" id="m-rel"><div class="label">Related</div><ul><li class="more">—</li></ul></div>
+<div class="margin-section" id="m-notes"><div class="label">Notes</div><ul><li class="more">—</li></ul></div>
+<div class="margin-section" id="m-links"><div class="label">Sources</div><ul><li class="more">—</li></ul></div>
+<p class="margin-hint">Hover &middot; <kbd>tab</kbd> &middot; click to pin</p>
+</div></aside>
+
+</div></div>
+
+<script id="reference-data" type="application/json">
+{
+"bpe":{"title":"Byte-pair encoding","code":"merge loop","body":"Subword tokenization. Start with raw bytes (0..255 are tokens 0..255), then greedily merge the most frequent adjacent pair into a new token. Repeat until you have N tokens. At inference, run the same merge rules in rank order on each pretoken.","meta":{"variant":"byte-level","vocab_size":"~100K-200K","origin":"Sennrich 2016"},"rel":["pretokenizer","vocab-hash"],"notes":["byte-level means the alphabet is bytes, not characters","inherently serial within a pretoken","trivially parallel across pretokens"],"links":[{"label":"Sennrich, Haddow, Birch (2016)","url":"https://arxiv.org/abs/1508.07909"},{"label":"karpathy - Let's build the GPT Tokenizer","url":"https://www.youtube.com/watch?v=zduSFxRajkE"},{"label":"openai/tiktoken","url":"https://github.com/openai/tiktoken"}]},
+"pretokenizer":{"title":"Pretokenizer","code":"regex pre-pass","body":"Splits raw bytes into pretokens before BPE. Each vocab specifies a regex like 's| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+. The regex prevents merges from crossing semantic boundaries (e.g. word + space + word never merges into one token).","meta":{"cl100k":"5 alts","o200k":"adds CamelCase","engine":"hand-rolled"},"rel":["bpe","camelcase-rule","two-stage-table"],"notes":["disjoint character classes - no real regex engine needed","ASCII fast path with AVX2","UTF-8 falls to scalar"],"links":[{"label":"openai/tiktoken pat_str","url":"https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py"}]},
+"camelcase-rule":{"title":"o200k CamelCase rule","code":"upper* lower+ | upper+ lower*","body":"o200k introduces explicit splits at CamelCase boundaries via two letter-run alternatives. The first matches an upperish prefix followed by lowerish chars (CamelCase, getValue), the second matches an all-uppercase run. Backtracking-greedy semantics on quantifiers.","meta":{"alts":"two","backtrack":"yes","share":"~22% self-time"},"rel":["pretokenizer","fancy-regex"],"notes":["only neutral codepoints (Lm, Lo, M) are given back during backtrack","upperish = Lu|Lt|Lm|Lo|M","lowerish = Ll|Lm|Lo|M","standalone contraction rule replaced by trailing suffix"],"links":[{"label":"openai/tiktoken o200k pat_str","url":"https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py"}]},
+"vocab-hash":{"title":"Vocab hash table","code":"FNV-1a + linear probing","body":"Static, immutable, mmap'd hash table from token bytes to rank. ~200K entries, power-of-two table size, load 0.38, average probe ~1.3. Page-shared across processes via the page cache.","meta":{"size":"~2.2-4.5 MiB","load":"0.38","probe":"linear","share":"38% self-time"},"rel":["fnv1a","open-addressing","linear-probing","swisstables"],"notes":["hottest function in the profile","vocab is loaded once, queried millions of times","never updated at runtime"],"links":[{"label":"src/vocab.c (this repo)","url":"https://github.com/hed0rah/x8r/blob/main/src/vocab.c"}]},
+"fnv1a":{"title":"FNV-1a 32-bit","code":"hash function","body":"Fowler-Noll-Vo, additive variant. h = (h XOR byte) * prime, byte by byte. No SIMD, but trivially branch-free and predictable. Good distribution for short keys, weaker than xxh3 / rapidhash on long ones. We pick it because vocab keys are 1-6 bytes.","meta":{"output":"32-bit","seed":"none","rate":"~1 byte/cycle"},"rel":["vocab-hash","open-addressing"],"notes":["alternative: rapidhash beats FNV on 1-8 byte keys","Zen 4 perf: 30-40 cycles for 8-byte FNV vs ~12 for rapidhash","not a measured bottleneck within the 38%"],"links":[{"label":"FNV reference","url":"http://www.isthe.com/chongo/tech/comp/fnv/"},{"label":"rapidhash","url":"https://github.com/Nicoshev/rapidhash"}]},
+"open-addressing":{"title":"Open addressing","code":"all keys in one array","body":"Hash table layout where every slot lives in the same flat array - no per-bucket allocation, no pointer chasing. On collision, probe to the next slot. Cache-friendly and compact, but performance degrades sharply above load 0.7.","meta":{"alt":"chaining","cache":"friendly","ours":"linear"},"rel":["linear-probing","swisstables","vocab-hash"],"notes":["our load is 0.38, plenty of headroom","keys stored inline in 16-byte buckets","longer keys overflow to a separate region"],"links":[{"label":"Knuth TAOCP vol 3","url":"https://www-cs-faculty.stanford.edu/~knuth/taocp.html"}]},
+"linear-probing":{"title":"Linear probing","code":"probe = bucket + 1","body":"Open-addressing collision strategy: on miss, look at the very next bucket. Best cache behaviour of any open-addressing scheme - the next probe is on the same line if the line holds multiple buckets. Worst clustering behaviour, mitigated by keeping load low.","meta":{"locality":"best","cluster":"yes","mitigation":"low load"},"rel":["open-addressing","vocab-hash"],"notes":["alternative: quadratic, double-hashing, robin hood, swisstables","at load 0.38, ~85% of probes terminate at first slot","rare 5+ probe chains tracked in the bench"],"links":[{"label":"Robin Hood hashing","url":"https://en.wikipedia.org/wiki/Hash_table#Robin_Hood_hashing"}]},
+"swisstables":{"title":"Swisstables (abseil flat_hash_map)","code":"control-byte SIMD probe","body":"Open-addressing hash table that scans 16 buckets at a time using a parallel control-byte array and SSE2 PCMPEQB. Each bucket has a 1-byte control entry: 7 hash bits + a state bit. PCMPEQB returns a 16-bit mask of candidates; full key compare runs only for set bits.","meta":{"group":"16","control":"1B/slot","load":"up to 0.875"},"rel":["vocab-hash","linear-probing","pshufb"],"notes":["proven win at higher load factors","extra control byte per slot is the main overhead","not yet adopted in x8r - waiting for clear evidence"],"links":[{"label":"Abseil - Swiss Tables","url":"https://abseil.io/about/design/swisstables"},{"label":"Kulukundis CppCon 2017","url":"https://www.youtube.com/watch?v=ncHmEUmJZf4"}]},
+"avx2":{"title":"AVX2","code":"256-bit SIMD","body":"x86 SIMD ISA, baseline since Haswell (2013). 256-bit YMM registers, byte-granular operations, lane-crossing shuffles. AVX2 is the floor for x8r - we compile with -march=x86-64-v3, which mandates it.","meta":{"width":"256-bit","since":"Haswell 2013","baseline":"v3"},"rel":["vpmovmskb","pshufb","pretokenizer"],"notes":["operates on YMM0..15","lane-crossing helpers: VPERMD, VPERMQ","Zen 4 has full-width units; older Zen split into 2x128"],"links":[{"label":"Intel Intrinsics Guide","url":"https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html"}]},
+"vpmovmskb":{"title":"VPMOVMSKB","code":"byte-mask to integer","body":"Extracts the high bit of each byte in a YMM register into a 32-bit GPR. Combined with a class-test PCMPEQB / PCMPGTB, gives you 'where in this 32-byte window did the class change'. Pair with TZCNT to get the offset of the first transition.","meta":{"latency":"3","throughput":"1","port":"FP1"},"rel":["avx2","pshufb"],"notes":["the staple of byte-class scanning","Zen 4 reciprocal throughput 1.0","analogous on ARM via two PMOVN tricks"],"links":[{"label":"Intel Intrinsics Guide - _mm256_movemask_epi8","url":"https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm256_movemask_epi8"}]},
+"pshufb":{"title":"PSHUFB","code":"per-byte shuffle / LUT","body":"Looks up each byte of an input register as an index into a 16-entry table held in another register. With nibble preprocessing, gives you a fast 16-way SIMD lookup. Foundation of simdjson character classification, swisstable group probing, lemire's UTF-8 validator.","meta":{"latency":"1","throughput":"0.5","port":"FP1/FP2"},"rel":["avx2","two-stage-table"],"notes":["use as a class LUT for 4-bit categories","stack two PSHUFBs (high nibble + low nibble) for 8-bit","central to nearly every SIMD parsing trick"],"links":[{"label":"Mula - SIMD byte lookup","url":"http://0x80.pl/notesen/2018-10-18-simd-byte-lookup.html"}]},
+"two-stage-table":{"title":"Two-stage Unicode class table","code":"stage1 + stage2","body":"Compact O(1) codepoint-to-class lookup. stage1[cp>>8] gives a block index; stage2[block][cp&0xFF] gives the class bits. Duplicate 256-byte blocks deduplicated. ~39 KiB total for 7 class bits, faster than any tree or trie.","meta":{"size":"~39 KiB","blocks":"139","bits/cp":"7"},"rel":["pretokenizer","fancy-regex"],"notes":["generated from python regex module, not unicodedata","stage1 dense, stage2 deduped","ICU and unicode-rs use the same pattern"],"links":[{"label":"src/unicode_tables.h (generated)","url":"https://github.com/hed0rah/x8r/blob/main/scripts/gen_unicode_tables.py"}]},
+"fancy-regex":{"title":"fancy-regex","code":"rust regex with backtracking","body":"Rust regex crate that supports backtracking, lookaround, and unicode property matching. tiktoken's pretokenizer runs through fancy-regex. Its unicode property tables differ slightly from python's unicodedata for unassigned codepoints inside script blocks.","meta":{"engine":"rust","backtrack":"yes","unicode":"yes"},"rel":["pretokenizer","two-stage-table"],"notes":["U+18D9E example: Cn in unicodedata, Lo in fancy-regex","python regex module agrees with fancy-regex","x8r matches python regex / fancy-regex"],"links":[{"label":"fancy-regex on docs.rs","url":"https://docs.rs/fancy-regex"}]},
+"cl100k":{"title":"cl100k_base","code":"GPT-3.5 / GPT-4 vocab","body":"OpenAI tokenizer used by GPT-3.5-turbo, GPT-4. ~100K tokens. Pretok regex includes standalone contraction rule (e.g. \"'s\", \"'re\"). Distributed via tiktoken's mergeable_ranks API.","meta":{"size":"~100K","models":"GPT-3.5/4","contractions":"explicit"},"rel":["o200k","bpe","vocab-hash"],"notes":["x8r/vocab/cl100k.bin is a flat dump of mergeable_ranks","tested on 10K random + golden corpus","bit-exact match"],"links":[{"label":"tiktoken_ext/openai_public.py","url":"https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py"}]},
+"o200k":{"title":"o200k_base","code":"GPT-4o vocab","body":"OpenAI tokenizer used by GPT-4o. ~200K tokens. Pretok regex adds explicit CamelCase splitting and absorbs '/' into trailing-punct class. Standalone contraction rule replaced by trailing-suffix on letter runs.","meta":{"size":"~200K","models":"GPT-4o","camelcase":"yes"},"rel":["cl100k","camelcase-rule","bpe"],"notes":["adopted by Claude / OpenAI / others post-2024","x8r/vocab/o200k.bin is the dump","bit-exact on linux kernel + 10K fuzz"],"links":[{"label":"tiktoken_ext/openai_public.py","url":"https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py"}]},
+"chunker":{"title":"Boundary-aware chunker","code":"budget search + walk-back","body":"Splits a token stream into chunks of ≤ B tokens each, cut at the best available boundary. Binary search the cumulative count for the largest prefix ≤ B, then walk back through boundary candidates inside tolerance.","meta":{"budget":"tokens","tolerance":"10% default","kinds":"block / blank / line / hard"},"rel":["pretokenizer","bpe"],"notes":["line boundary is default and almost always finds a good cut","tree-sitter syntax mode sketched but disabled","output: byte offsets, token count, boundary kind"],"links":[{"label":"src/chunk.c (this repo)","url":"https://github.com/hed0rah/x8r/blob/main/src/chunk.c"}]},
+"mmap":{"title":"mmap","code":"file → virtual address","body":"POSIX call mapping a file into the process address space. PROT_READ | MAP_PRIVATE for our case. Page cache handles the actual I/O lazily; multiple invocations on the same file share pages, so warm calls are essentially free.","meta":{"prot":"READ","map":"PRIVATE","cost":"page faults on first access"},"rel":["madvise","vocab-hash"],"notes":["vocab blob is mmap'd too - shared page across invocations","stdin path falls back to a growable buffer","binary stays small because we don't read into heap"],"links":[{"label":"man mmap(2)","url":"https://man7.org/linux/man-pages/man2/mmap.2.html"}]},
+"madvise":{"title":"madvise","code":"kernel hint","body":"Tells the kernel how a memory range will be accessed. We use MADV_SEQUENTIAL so the prefetcher pulls ahead aggressively, and MADV_WILLNEED to start the read-ahead immediately on open.","meta":{"hints":"SEQ + WILLNEED","scope":"per-mapping","cost":"single syscall"},"rel":["mmap"],"notes":["measurable on cold runs (small sequential files)","essentially free on warm runs","could revisit MADV_HUGEPAGE for the vocab"],"links":[{"label":"man madvise(2)","url":"https://man7.org/linux/man-pages/man2/madvise.2.html"}]},
+"flamegraph":{"title":"Flamegraph","code":"perf record + collapse","body":"Stack-aggregated time profile rendered as nested rectangles. Each box's width is its share of total samples; height is stack depth. perf record at 1999 Hz with frame pointers, then stackcollapse-perf and flamegraph.pl.","meta":{"tool":"linux perf","sample":"1999 Hz","render":"flamegraph.pl"},"rel":["vpmovmskb"],"notes":["1999 Hz is prime to avoid sync with timer interrupts","frame pointers cost ~1-2% but make stacks legible","flamelens for terminal interactive view"],"links":[{"label":"FlameGraph repo","url":"https://github.com/brendangregg/FlameGraph"},{"label":"Brendan Gregg - flamegraphs","url":"https://www.brendangregg.com/flamegraphs.html"}]},
+"simd-utf8":{"title":"SIMD UTF-8 classify","code":"future work","body":"Replace the scalar UTF-8 path with a SIMD validator (lemire/keiser) plus PSHUFB-based class lookup for 2-byte sequences. Would close the gap to memory bandwidth on prose corpora where the AVX2 ASCII path bails immediately.","meta":{"target":"utf8_prose_large","gain":"~2x estimated","cost":"~1 week"},"rel":["pshufb","two-stage-table","pretokenizer"],"notes":["lemire 2020 paper for the validator","2-byte covers Latin Extended, Cyrillic, Greek - most non-ASCII in practice","3-byte (CJK) coarse-classify by lead byte","4-byte stays scalar"],"links":[{"label":"Lemire & Keiser (2020) - Validating UTF-8 < 1 inst/byte","url":"https://arxiv.org/abs/2010.03090"},{"label":"simdutf/simdutf","url":"https://github.com/simdutf/simdutf"}]}
+}
+</script>
+
+<script>
+(()=>{
+const D=JSON.parse(document.getElementById('reference-data').textContent);
+const els={t:document.getElementById('m-title'),c:document.getElementById('m-code'),b:document.getElementById('m-body'),m:document.getElementById('m-meta'),r:document.getElementById('m-rel'),n:document.getElementById('m-notes'),l:document.getElementById('m-links')};
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
+function host(u){try{return new URL(u).hostname.replace(/^www\./,'');}catch(e){return '';}}
+function paint(k){
+  const x=D[k];if(!x)return;
+  els.t.textContent=x.title;
+  els.c.textContent=x.code||'—';
+  els.b.textContent=x.body||'';
+  els.m.innerHTML=Object.entries(x.meta||{}).map(([k,v])=>`<div><strong>${esc(k)}</strong><span>${esc(v)}</span></div>`).join('');
+  els.r.querySelector('ul').innerHTML=(x.rel||[]).map(r=>{const o=D[r];return o?`<li>&rsaquo; ${esc(o.title)}</li>`:'';}).join('')||'<li class="more">—</li>';
+  els.n.querySelector('ul').innerHTML=(x.notes||[]).map(n=>`<li style="white-space:normal;font-family:inherit;font-size:0.76rem">&middot; ${esc(n)}</li>`).join('')||'<li class="more">—</li>';
+  els.l.querySelector('ul').innerHTML=(x.links||[]).map(L=>`<li class="link-item"><a href="${esc(L.url)}" target="_blank" rel="noopener noreferrer">${esc(L.label)}</a><span class="src">${esc(host(L.url))}</span></li>`).join('')||'<li class="more">—</li>';
+}
+document.querySelectorAll('.term').forEach(el=>{
+  el.setAttribute('tabindex','0');
+  el.addEventListener('focus',()=>paint(el.getAttribute('data-term')));
+  el.addEventListener('click',e=>{e.preventDefault();paint(el.getAttribute('data-term'));});
+});
+document.addEventListener('mouseover',e=>{
+  const t=e.target.closest('.term');
+  if(!t)return;
+  paint(t.getAttribute('data-term'));
+  document.querySelectorAll('.term.is-active').forEach(x=>{if(x!==t)x.classList.remove('is-active');});
+  t.classList.add('is-active');
+});
+})();
+</script>
+</body></html>
