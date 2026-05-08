@@ -12,8 +12,8 @@
  * combine it. when no merge is possible the remaining parts are the
  * final tokens.
  *
- * this is the straightforward O(n^2) implementation. a priority queue
- * would drop it to O(n log n), worth it once profiling shows it.
+ * two paths: a linear scan for short pre-tokens (<=32 parts) and a
+ * binary min-heap for longer ones (O(n log n) vs O(n^2)).
  */
 
 typedef struct {
@@ -41,6 +41,43 @@ static size_t ensure_cap(uint32_t **ranks, size_t *cap, size_t need) {
     *ranks = nr;
     *cap = ncap;
     return 0;
+}
+
+/* binary min-heap of (rank, index) pairs for the merge loop */
+typedef struct {
+    uint32_t rank;
+    int32_t idx;
+} heap_entry;
+
+static void heap_sift_down(heap_entry *h, size_t n, size_t i) {
+    for (;;) {
+        size_t smallest = i;
+        size_t l = 2 * i + 1;
+        size_t r = 2 * i + 2;
+        if (l < n && h[l].rank < h[smallest].rank) smallest = l;
+        if (r < n && h[r].rank < h[smallest].rank) smallest = r;
+        if (smallest == i) break;
+        heap_entry t = h[i]; h[i] = h[smallest]; h[smallest] = t;
+        i = smallest;
+    }
+}
+
+static void heap_push(heap_entry *h, size_t *n, uint32_t rank, int32_t idx) {
+    size_t i = (*n)++;
+    h[i].rank = rank;
+    h[i].idx = idx;
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (h[p].rank <= h[i].rank) break;
+        heap_entry t = h[p]; h[p] = h[i]; h[i] = t;
+        i = p;
+    }
+}
+
+static void heap_pop(heap_entry *h, size_t *n) {
+    if (*n == 0) return;
+    h[0] = h[--(*n)];
+    if (*n > 0) heap_sift_down(h, *n, 0);
 }
 
 size_t x8r_bpe_encode(const x8r_vocab *v,
@@ -89,36 +126,96 @@ size_t x8r_bpe_encode(const x8r_vocab *v,
         }
     }
 
-    /* merge until no pair is in the vocab */
-    for (;;) {
-        int32_t best = -1;
-        uint32_t best_rank = UINT32_MAX;
-        int32_t cur = 0;
-        while (cur >= 0) {
-            if (parts[cur].next >= 0 && parts[cur].rank < best_rank) {
-                best_rank = parts[cur].rank;
-                best = cur;
+    /* threshold split: linear scan for short pre-tokens (common in
+     * generated corpus), binary min-heap for longer ones */
+    if (len <= 32) {
+
+        /* --- linear scan (kept exactly as-is for len <= 32) --- */
+        for (;;) {
+            int32_t best = -1;
+            uint32_t best_rank = UINT32_MAX;
+            int32_t cur = 0;
+            while (cur >= 0) {
+                if (parts[cur].next >= 0 && parts[cur].rank < best_rank) {
+                    best_rank = parts[cur].rank;
+                    best = cur;
+                }
+                cur = parts[cur].next;
             }
-            cur = parts[cur].next;
-        }
-        if (best < 0) break;
+            if (best < 0) break;
 
-        /* merge best and best->next */
-        int32_t right = parts[best].next;
-        parts[best].len += parts[right].len;
-        parts[best].next = parts[right].next;
-        if (parts[best].next >= 0) parts[parts[best].next].prev = best;
+            /* merge best and best->next */
+            int32_t right = parts[best].next;
+            parts[best].len += parts[right].len;
+            parts[best].next = parts[right].next;
+            if (parts[best].next >= 0) parts[parts[best].next].prev = best;
 
-        /* recompute ranks for (prev, best) and (best, next) */
-        if (parts[best].prev >= 0) {
-            int32_t pv = parts[best].prev;
-            parts[pv].rank = pair_rank(v, bytes, &parts[pv], &parts[best]);
+            /* recompute ranks for (prev, best) and (best, next) */
+            if (parts[best].prev >= 0) {
+                int32_t pv = parts[best].prev;
+                parts[pv].rank = pair_rank(v, bytes, &parts[pv], &parts[best]);
+            }
+            if (parts[best].next >= 0) {
+                parts[best].rank = pair_rank(v, bytes, &parts[best], &parts[parts[best].next]);
+            } else {
+                parts[best].rank = UINT32_MAX;
+            }
         }
-        if (parts[best].next >= 0) {
-            parts[best].rank = pair_rank(v, bytes, &parts[best], &parts[parts[best].next]);
+
+    } else {
+
+        /* --- binary min-heap path for long pre-tokens (len > 32) --- */
+        heap_entry hbuf[512];
+        heap_entry *hp;
+        int hp_heap = 0;
+        if (len <= 512) {
+            hp = hbuf;
         } else {
-            parts[best].rank = UINT32_MAX;
+            hp = (heap_entry *)malloc(sizeof(heap_entry) * (len * 2));
+            if (!hp) { if (heap) free(parts); return 0; }
+            hp_heap = 1;
         }
+
+        size_t hp_n = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if (parts[i].next >= 0) {
+                heap_push(hp, &hp_n, parts[i].rank, (int32_t)i);
+            }
+        }
+
+        for (;;) {
+            int32_t best = -1;
+            while (hp_n > 0) {
+                uint32_t r = hp[0].rank;
+                int32_t idx = hp[0].idx;
+                heap_pop(hp, &hp_n);
+                if (parts[idx].next >= 0 && parts[idx].rank == r) {
+                    best = idx;
+                    break;
+                }
+            }
+            if (best < 0) break;
+
+            int32_t right = parts[best].next;
+            parts[best].len += parts[right].len;
+            parts[best].next = parts[right].next;
+            if (parts[best].next >= 0) parts[parts[best].next].prev = best;
+            parts[right].next = -1;      /* invalidate stale heap entries */
+
+            if (parts[best].prev >= 0) {
+                int32_t pv = parts[best].prev;
+                parts[pv].rank = pair_rank(v, bytes, &parts[pv], &parts[best]);
+                heap_push(hp, &hp_n, parts[pv].rank, pv);
+            }
+            if (parts[best].next >= 0) {
+                parts[best].rank = pair_rank(v, bytes, &parts[best], &parts[parts[best].next]);
+                heap_push(hp, &hp_n, parts[best].rank, best);
+            } else {
+                parts[best].rank = UINT32_MAX;
+            }
+        }
+
+        if (hp_heap) free(hp);
     }
 
     /* emit remaining parts as tokens */
