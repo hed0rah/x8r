@@ -133,7 +133,9 @@ def main():
                 "cold": stats(cold),
                 "warm": stats(warm),
             }
-            print(f"  {f.name:32s} {eng:9s} cold_min={min(cold):7.2f}ms warm_min={min(warm):7.2f}ms")
+            cold_str = f"{min(cold):7.2f}ms" if cold else "  N/A  "
+            warm_str = f"{min(warm):7.2f}ms" if warm else "  N/A  "
+            print(f"  {f.name:32s} {eng:9s} cold_min={cold_str} warm_min={warm_str}")
 
     Path(args.json_out).write_text(json.dumps(results, indent=2))
     print(f"\nwrote {args.json_out}")
@@ -144,9 +146,13 @@ def main():
     print("-" * 90)
     for name, r in results.items():
         size = r["size"]
-        xc = r["x8r"]["cold"]["min"]; tc = r["tiktoken"]["cold"]["min"]
+        xc = r["x8r"]["cold"]["min"] if "min" in r["x8r"]["cold"] else 0
+        tc = r["tiktoken"]["cold"]["min"] if "min" in r["tiktoken"]["cold"] else 0
         xw = r["x8r"]["warm"]["min"]; tw = r["tiktoken"]["warm"]["min"]
-        print(f"{name:32s} {size:>10d}  {xc:>9.2f}ms {tc:>9.2f}ms {tc/xc:>7.2f}x  {xw:>9.2f}ms {tw:>9.2f}ms {tw/xw:>7.2f}x")
+        xc_s = f"{xc:>9.2f}ms" if xc else "     N/A"
+        tc_s = f"{tc:>9.2f}ms" if tc else "     N/A"
+        spd_c = f"{tc/xc:>7.2f}x" if xc else "    N/A"
+        print(f"{name:32s} {size:>10d}  {xc_s} {tc_s} {spd_c}  {xw:>9.2f}ms {tw:>9.2f}ms {tw/xw:>7.2f}x")
 
 if __name__ == "__main__":
     main()
