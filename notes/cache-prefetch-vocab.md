@@ -5,6 +5,20 @@ the cache-hierarchy priors, hardware-prefetcher behaviour, and the proposed
 software-prefetch hypothesis. The hypothesis is **not** a recommendation --
 it is conditional on measurements that have not yet been taken.
 
+**Update (post-measurement):** `notes/vocab-probe-measurement.md` answers
+the open questions. Median probe length is 1 (65-86% first-probe
+resolution), L1 miss rates are 1.6-8.7%, and the prefetch idea is dead
+on this workload. The measurement infra (env-gated histogram, perf
+script) lives in the codebase as a permanent debug knob if conditions
+change. The reference content below stays useful for future work.
+
+Note also that `src/vocab.c` already had two `__builtin_prefetch` calls
+before this analysis began -- one for the next probe slot, one for the
+entry header. The original deepresearch paper (which this file
+distills) didn't account for them. Any future prefetch proposal should
+start from "what do the existing prefetches already cover" before
+proposing additions.
+
 ## Why the function is interesting
 
 `x8r_vocab_lookup` is 38% of self-time in the v0.3 flamegraph
