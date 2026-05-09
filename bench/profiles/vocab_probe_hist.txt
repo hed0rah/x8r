@@ -1,0 +1,227 @@
+================================================================================
+ x8r vocab probe histogram — cjk_dense.txt (131 KB, CJK stressor)
+ 102989 tokens, 187177 lookups
+================================================================================
+
+=== x8r_vocab_lookup probe length histogram ===
+ probes            count    percent
+ ---------- ------------ ----------
+      1           122707     65.56%
+      2            33711     18.01%
+      3            13308      7.11%
+      4             6952      3.71%
+      5             4135      2.21%
+   6-10             5737      3.07%
+  11-20              611      0.33%
+    21+               16      0.01%
+ ---------- ------------ ----------
+ total            187177    100.00%
+ min:    1
+ median: 1
+ p99:    8
+=============================================
+
+102989
+
+================================================================================
+ x8r vocab probe histogram — ascii_code_large.txt (1 MB, code)
+ 427655 tokens, 593141 lookups
+================================================================================
+
+=== x8r_vocab_lookup probe length histogram ===
+ probes            count    percent
+ ---------- ------------ ----------
+      1           511666     86.26%
+      2            45523      7.67%
+      3            16903      2.85%
+      4             8888      1.50%
+      5             4437      0.75%
+   6-10             5345      0.90%
+  11-20              374      0.06%
+    21+                5      0.00%
+ ---------- ------------ ----------
+ total            593141    100.00%
+ min:    1
+ median: 1
+ p99:    5
+=============================================
+
+427655
+
+================================================================================
+ x8r vocab probe histogram — utf8_prose_large.txt (1 MB, English prose)
+ 300540 tokens, 1396406 lookups
+================================================================================
+
+=== x8r_vocab_lookup probe length histogram ===
+ probes            count    percent
+ ---------- ------------ ----------
+      1          1153008     82.57%
+      2           117429      8.41%
+      3            53562      3.84%
+      4            41436      2.97%
+      5                0      0.00%
+   6-10            21552      1.54%
+  11-20             9419      0.67%
+    21+                0      0.00%
+ ---------- ------------ ----------
+ total           1396406    100.00%
+ min:    1
+ median: 1
+ p99:    8
+=============================================
+
+300540
+
+================================================================================
+ x8r vocab cache perf stat — cjk_dense.txt (131 KB, stressor)
+ 5 warm iterations
+================================================================================
+
+Note: Intel-specific events (mem_load_retired.*, l2_rqsts.*) not available
+in this environment. Measurements use generic perf events.
+
+iter 1:
+  7,205,991 L1-dcache-loads
+    652,938 L1-dcache-load-misses    9.06%
+    172,365 LLC-loads
+     15,129 LLC-load-misses          8.78% of LLC
+    180,039 cache-misses
+ 31,053,484 cycles
+ 35,989,083 instructions            1.16 CPI
+
+iter 2:
+  7,656,701 L1-dcache-loads
+    665,354 L1-dcache-load-misses    8.69%
+    162,776 LLC-loads
+     18,291 LLC-load-misses         11.24% of LLC
+    131,235 cache-misses
+ 29,827,507 cycles
+ 36,789,081 instructions            1.23 CPI
+
+iter 3:
+  7,852,048 L1-dcache-loads
+    671,717 L1-dcache-load-misses    8.55%
+    164,155 LLC-loads
+     14,617 LLC-load-misses          8.90% of LLC
+    145,630 cache-misses
+ 29,088,866 cycles
+ 37,600,290 instructions            1.29 CPI
+
+iter 4:
+  7,817,194 L1-dcache-loads
+    683,471 L1-dcache-load-misses    8.74%
+    161,764 LLC-loads
+     14,943 LLC-load-misses          9.24% of LLC
+    152,269 cache-misses
+ 29,100,865 cycles
+ 36,979,865 instructions            1.27 CPI
+
+iter 5:
+  7,912,849 L1-dcache-loads
+    678,958 L1-dcache-load-misses    8.58%
+    160,244 LLC-loads
+     18,002 LLC-load-misses         11.23% of LLC
+    146,162 cache-misses
+ 29,291,641 cycles
+ 36,374,568 instructions            1.24 CPI
+
+================================================================================
+ x8r vocab cache perf stat — ascii_code_large.txt (1 MB, code)
+ 5 warm iterations
+================================================================================
+
+iter 1:
+ 31,122,417 L1-dcache-loads
+    979,272 L1-dcache-load-misses    3.15%
+    372,174 LLC-loads
+     18,784 LLC-load-misses          5.05% of LLC
+    129,113 cache-misses
+ 73,898,979 cycles
+136,750,353 instructions            1.85 CPI
+
+iter 2:
+ 31,336,707 L1-dcache-loads
+    982,930 L1-dcache-load-misses    3.14%
+    366,177 LLC-loads
+     16,091 LLC-load-misses          4.39% of LLC
+    157,352 cache-misses
+ 73,098,786 cycles
+135,562,103 instructions            1.85 CPI
+
+iter 3:
+ 30,469,478 L1-dcache-loads
+    974,719 L1-dcache-load-misses    3.20%
+    371,101 LLC-loads
+     17,960 LLC-load-misses          4.84% of LLC
+    114,723 cache-misses
+ 73,967,393 cycles
+136,804,519 instructions            1.85 CPI
+
+iter 4:
+ 31,028,106 L1-dcache-loads
+    972,459 L1-dcache-load-misses    3.13%
+    367,744 LLC-loads
+     25,414 LLC-load-misses          6.91% of LLC
+    155,989 cache-misses
+ 76,765,148 cycles
+134,790,194 instructions            1.76 CPI
+
+iter 5:
+ 30,419,169 L1-dcache-loads
+    981,126 L1-dcache-load-misses    3.23%
+    368,387 LLC-loads
+     16,278 LLC-load-misses          4.42% of LLC
+    105,913 cache-misses
+ 75,088,371 cycles
+136,858,744 instructions            1.82 CPI
+
+================================================================================
+ x8r vocab cache perf stat — utf8_prose_large.txt (1 MB, English prose)
+ 5 warm iterations
+================================================================================
+
+iter 1:
+ 61,888,369 L1-dcache-loads
+    972,851 L1-dcache-load-misses    1.57%
+     19,097 LLC-loads
+      5,244 LLC-load-misses         27.46% of LLC
+     85,615 cache-misses
+100,214,469 cycles
+275,970,021 instructions            2.75 CPI
+
+iter 2:
+ 62,228,788 L1-dcache-loads
+    987,918 L1-dcache-load-misses    1.59%
+     18,348 LLC-loads
+      3,805 LLC-load-misses         20.74% of LLC
+     55,618 cache-misses
+ 95,294,738 cycles
+276,321,553 instructions            2.90 CPI
+
+iter 3:
+ 61,964,781 L1-dcache-loads
+    966,717 L1-dcache-load-misses    1.56%
+     21,473 LLC-loads
+      4,100 LLC-load-misses         19.09% of LLC
+     61,740 cache-misses
+ 97,345,231 cycles
+274,931,200 instructions            2.82 CPI
+
+iter 4:
+ 62,251,115 L1-dcache-loads
+    953,340 L1-dcache-load-misses    1.53%
+     20,574 LLC-loads
+      4,577 LLC-load-misses         22.25% of LLC
+     86,065 cache-misses
+ 96,377,446 cycles
+274,149,244 instructions            2.84 CPI
+
+iter 5:
+ 62,228,563 L1-dcache-loads
+    966,977 L1-dcache-load-misses    1.55%
+     20,838 LLC-loads
+      4,094 LLC-load-misses         19.65% of LLC
+     59,177 cache-misses
+ 96,095,279 cycles
+276,372,137 instructions            2.88 CPI

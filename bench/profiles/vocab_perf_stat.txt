@@ -1,0 +1,43 @@
+================================================================================
+ x8r vocab cache perf stat — cjk_dense.txt (131 KB, CJK stressor)
+ 5 warm iterations
+================================================================================
+
+Environment notes:
+  - Intel i5-10300H (Comet Lake), under container with generic perf events.
+  - Fine-grained Intel events (mem_load_retired.*, l2_rqsts.*, l1d_pend_miss.fb_full)
+    not available — measurements use L1-dcache-loads, L1-dcache-load-misses,
+    LLC-loads, LLC-load-misses, cache-misses, cycles, instructions.
+  - perf_event_paranoid=1.
+
+Averages across 5 warm iterations (rounded):
+
+  cjk_dense (131 KB, CJK):
+    L1-dcache-loads:      7,728,957
+    L1-dcache-misses:       670,488    8.67% miss rate
+    LLC-loads:               164,261
+    LLC-misses:               16,196    9.86% of LLC-loads
+    cache-misses:            151,067
+    cycles:               29,672,473
+    instructions:          36,546,577    1.23 CPI
+    user time:               ~7 ms
+
+  ascii_code_large (1 MB, code):
+    L1-dcache-loads:     30,875,175
+    L1-dcache-misses:       978,101    3.17% miss rate
+    LLC-loads:               369,117
+    LLC-misses:               18,905    5.12% of LLC-loads
+    cache-misses:            132,618
+    cycles:               74,563,735
+    instructions:         136,153,103    1.83 CPI
+    user time:              ~17 ms
+
+  utf8_prose_large (1 MB, prose):
+    L1-dcache-loads:     62,112,323
+    L1-dcache-misses:       969,361    1.56% miss rate
+    LLC-loads:                20,066
+    LLC-misses:                4,364   21.75% of LLC-loads
+    cache-misses:             69,643
+    cycles:               97,065,433
+    instructions:         275,548,831    2.84 CPI
+    user time:              ~22 ms

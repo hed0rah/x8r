@@ -2,11 +2,137 @@
 #include "internal.h"
 
 #include <fcntl.h>
+#include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdio.h>
+
+/* ------------------------------------------------------------------ */
+/*  Probe-length histogram (env-gated debug knob)                     */
+/*                                                                    */
+/*  X8R_VOCAB_PROBE_HIST=1 ./build/x8r --count <file>  dumps to      */
+/*  stderr at exit the distribution of probe-chain lengths across all */
+/*  x8r_vocab_lookup calls.                                           */
+/*                                                                    */
+/*  Default (env unset): zero overhead on the hot path beyond a       */
+/*  single predicted-not-taken branch on a static flag.               */
+/* ------------------------------------------------------------------ */
+
+static int          x8r_probe_hist_on = -1;   /* -1 = uninit */
+static uint64_t     x8r_probe_buckets[8];
+static uint64_t     x8r_probe_total;
+
+/* bucket labels for display */
+static const char *x8r_probe_labels[8] = {
+    "     1", "     2", "     3", "     4", "     5",
+    "  6-10", " 11-20", "   21+"
+};
+
+/* upper bounds used for median/p99 interpolation */
+static const uint32_t x8r_probe_upper[8] = {
+    1, 2, 3, 4, 5, 10, 20, UINT32_MAX
+};
+
+static int x8r_probe_bucket(uint32_t p) {
+    if (p <= 5) return (int)(p - 1);
+    if (p <= 10) return 5;
+    if (p <= 20) return 6;
+    return 7;
+}
+
+static uint32_t x8r_probe_estimate_pctile(const uint64_t buckets[8],
+                                          uint64_t total, double pct) {
+    /* walk cumulative to find the bucket containing the pct-th percentile */
+    double target = (double)total * (pct / 100.0);
+    uint64_t cum = 0;
+    for (int i = 0; i < 8; i++) {
+        cum += buckets[i];
+        if ((double)cum >= target) {
+            /* if it's an exact bucket (0-4, probes 1-5), report exactly */
+            if (i <= 4) return (uint32_t)(i + 1);
+            /* otherwise mid-point of the range */
+            if (i == 5) return 8;   /* mid of 6-10 */
+            if (i == 6) return 15;  /* mid of 11-20 */
+            return 25;              /* floor of 21+ */
+        }
+    }
+    return x8r_probe_upper[7];
+}
+
+static void x8r_probe_hist_dump(void) {
+    if (x8r_probe_total == 0) return;
+
+    fprintf(stderr, "\n=== x8r_vocab_lookup probe length histogram ===\n");
+    fprintf(stderr, " %-10s %12s %10s\n", "probes", "count", "percent");
+    fprintf(stderr, " ---------- ------------ ----------\n");
+
+    for (int i = 0; i < 8; i++) {
+        double pct = (double)x8r_probe_buckets[i] / (double)x8r_probe_total * 100.0;
+        fprintf(stderr, " %-10s %12" PRIu64 " %9.2f%%\n",
+                x8r_probe_labels[i], x8r_probe_buckets[i], pct);
+    }
+    fprintf(stderr, " ---------- ------------ ----------\n");
+    fprintf(stderr, " %-10s %12" PRIu64 " %9.2f%%\n",
+            "total", x8r_probe_total, 100.0);
+
+    /* min */
+    uint32_t min_val = 0;
+    for (int i = 0; i < 8; i++) {
+        if (x8r_probe_buckets[i] > 0) {
+            min_val = (i <= 4) ? (uint32_t)(i + 1) : (uint32_t)(i == 5 ? 6 : (i == 6 ? 11 : 21));
+            break;
+        }
+    }
+
+    uint32_t med_val = x8r_probe_estimate_pctile(x8r_probe_buckets, x8r_probe_total, 50.0);
+    uint32_t p99_val = x8r_probe_estimate_pctile(x8r_probe_buckets, x8r_probe_total, 99.0);
+
+    /* max: walk from right */
+    uint32_t max_val = 0;
+    for (int i = 7; i >= 0; i--) {
+        if (x8r_probe_buckets[i] > 0) {
+            max_val = x8r_probe_upper[i];
+            if (max_val == UINT32_MAX) max_val = 0; /* unknown */
+            break;
+        }
+    }
+
+    if (min_val > 0)
+        fprintf(stderr, " min:    %u\n", min_val);
+    fprintf(stderr, " median: %u\n", med_val);
+    fprintf(stderr, " p99:    %u\n", p99_val);
+    if (max_val > 0)
+        fprintf(stderr, " max:    %u\n", max_val);
+    fprintf(stderr, "=============================================\n\n");
+}
+
+static inline void x8r_probe_hist_record(uint32_t probes) {
+    /* fast-path: already initialized and disabled → single predicted-not-taken return */
+    if (__builtin_expect(x8r_probe_hist_on == 0, 1))
+        return;
+
+    /* first call initializer */
+    if (__builtin_expect(x8r_probe_hist_on < 0, 0)) {
+        const char *e = getenv("X8R_VOCAB_PROBE_HIST");
+        x8r_probe_hist_on = (e && e[0]) ? 1 : 0;
+        if (x8r_probe_hist_on) {
+            atexit(x8r_probe_hist_dump);
+            /* fall through to record this first call */
+        } else {
+            return;
+        }
+    }
+
+    x8r_probe_total++;
+    x8r_probe_buckets[x8r_probe_bucket(probes)]++;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Vocab blob loading / lookup                                       */
+/* ------------------------------------------------------------------ */
 
 static inline void vocab_entry_read(const uint8_t *data, uint32_t off,
                                     uint16_t *out_len, uint32_t *out_rank,
@@ -135,6 +261,7 @@ void x8r_vocab_close(x8r_vocab *v) {
 }
 
 uint32_t x8r_vocab_lookup(const x8r_vocab *v, const uint8_t *bytes, size_t len) {
+    /* len > 0xFFFF rejects without probing; don't pollute the histogram */
     if (len > 0xFFFF) return UINT32_MAX;
     uint32_t h = x8r_hash_bytes(bytes, len);
     uint32_t mask = v->table_mask;
@@ -146,15 +273,22 @@ uint32_t x8r_vocab_lookup(const x8r_vocab *v, const uint8_t *bytes, size_t len) 
         /* prefetch the next probe slot in case of collision; cheap because
          * the same cache line often holds it (8 slots per 64B line). */
         __builtin_prefetch(&table[(i + 1) & mask], 0, 0);
-        if (off == X8R_VOCAB_EMPTY) return UINT32_MAX;
+        if (off == X8R_VOCAB_EMPTY) {
+            x8r_probe_hist_record(probe + 1);
+            return UINT32_MAX;
+        }
         /* prefetch the entry header before we touch it */
         __builtin_prefetch(data + off, 0, 0);
         uint16_t elen;
         uint32_t erank;
         const uint8_t *ebytes;
         vocab_entry_read(data, off, &elen, &erank, &ebytes);
-        if (elen == (uint16_t)len && bytes_eq_fast(ebytes, bytes, len)) return erank;
+        if (elen == (uint16_t)len && bytes_eq_fast(ebytes, bytes, len)) {
+            x8r_probe_hist_record(probe + 1);
+            return erank;
+        }
         i = (i + 1) & mask;
     }
+    x8r_probe_hist_record(v->table_size);
     return UINT32_MAX;
 }
