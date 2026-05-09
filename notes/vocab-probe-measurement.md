@@ -1,5 +1,19 @@
 # Vocab probe measurement: cache behaviour and prefetch implications
 
+## Lede
+
+The deepresearch paper that motivated this work estimated a +30 cycle
+saving per lookup from adding `_mm_prefetch` to the probe loop. The
+measurement says **-6.3 cycles per lookup** (the prefetch would be
+slower). Median probe length is 1 on every workload measured, so an
+always-on prefetch fires on lookups that never reach the prefetched
+slot, paying the ~8-cycle prefetch cost as pure overhead.
+
+A 36-cycle delta in the wrong direction is exactly the kind of result
+the measurement-first framework exists to catch. Per-call analytics
+get sign-of-effect right in unfamiliar territory only sometimes; the
+histogram and `perf stat` numbers do it always.
+
 ## Summary
 
 The measurement infrastructure landed in this session produces a clear
@@ -92,13 +106,14 @@ verdict on the three open questions from `notes/cache-prefetch-vocab.md`:
 - **Code (ascii_code)**: Moderate L1 misses (3.17%). 369K LLC-loads for
   427,655 tokens (0.86 per token). Lowest CPI among the three.
 
-- **Prose (utf8_prose)**: Lowest L1 miss rate (1.56%). Only 20K LLC-loads
-  for 300,540 tokens (0.07 per token). Highest CPI (2.84) despite low
-  miss rate — this suggests the bottleneck on this workload is not cache
-  misses but the hash compute and key-compare paths. The high
-  instructions-per-token ratio (~bf instructions per lookup) and high CPI
-  (2.84) with very few cache misses point to an instruction- or ALU-bound
-  hot path, not a memory-bound one.
+- **Prose (utf8_prose)**: Lowest L1 miss rate (1.56%) but the **highest
+  LLC miss rate** (21.75% of LLC accesses miss to DRAM, vs 5-10% on the
+  other workloads). CPI is also worst here at 2.84. This reads as: a
+  subset of vocab tokens used by prose are cold in DRAM and not in the
+  hot working set the rest of the corpus exercises. Not directly
+  actionable -- there's no obvious shape that fits "prefetch only the
+  cold ones" -- but worth re-measuring on prose-heavy workloads
+  specifically if the vocab access pattern becomes a bottleneck again.
 
 ## Implication for the software prefetch hypothesis
 
@@ -177,6 +192,47 @@ The measurement infrastructure now exists to revisit this decision if:
 
 Until then, the existing `__builtin_prefetch` calls (next slot + entry
 header) are the right level of prefetch investment.
+
+## What the histogram tells us about future vocab work
+
+Reading the data sideways: median probe length is 1, L1 miss rate is
+single-digit %, and yet `x8r_vocab_lookup` is 38% of total runtime.
+That math only works if we're calling vocab_lookup millions of times
+and the **per-call cost on the median-1 path** -- function call,
+FNV byte-loop, single L1 load, key compare -- adds up.
+
+Cache locality is not the problem. Per-call cost is. This reshapes
+where future optimization effort should go:
+
+1. **Faster hash on short keys.** FNV-1a's byte-at-a-time
+   multiply-XOR doesn't pipeline. ~80% of vocab tokens are 1-6 bytes
+   -- exactly the regime where rapidhash / wyhash on a single
+   `uint64_t` load (with zero-padding) beats FNV by 3-5x. The
+   measurement justifies a hash-function swap before it justifies
+   anything probe-related. Highest expected leverage on the per-call
+   cost.
+
+2. **Inline / hot-path the median-1 case.** A specialized fast path
+   that handles single-probe lookups branch-free, then bails to the
+   generic loop only on collision. 65-86% of lookups would skip the
+   full probe-loop machinery entirely.
+
+3. **Swisstables, reframed.** Pre-measurement the case for swisstables
+   was "fewer probes." That's wrong on this codebase -- there aren't
+   meaningfully many probes to reduce. The actual case for swisstables
+   is **metadata-in-cache**: a 1-byte control array per slot fits 8x
+   more probe metadata in L1/L2 than a 4-byte offset table. With
+   median probe 1, the win is tighter prefetch coverage on the first
+   probe, not group-probe parallelism. Less compelling than (1) but
+   worth re-evaluating once the hash function isn't the bottleneck.
+
+4. **Smaller hash output (16-bit).** A halved offset table fits
+   roughly twice as much in L2. Same theme as (3).
+
+(1) and (2) are pure wins -- additive complexity, measurable benefit,
+no architectural changes. (3) and (4) are bigger structural changes
+and should wait until (1)+(2) have landed and per-call cost has
+shifted.
 
 ## Durable measurement infrastructure landed
 
