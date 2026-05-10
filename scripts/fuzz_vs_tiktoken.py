@@ -154,12 +154,15 @@ def count_tiktoken(data: bytes) -> int:
     return len(ENC.encode_ordinary(text))
 
 
-# ID-level fuzz mode: use --encode and compare lists, not just counts.
-# Catches "same total, different tokens" bugs that count-only fuzzing misses.
-# Enabled by X8R_FUZZ_CHECK=ids; default is count.
+# Check modes for the fuzzer:
+#   count     - compare token counts only (cheap, default)
+#   ids       - compare full token-id lists (catches same-count-different-tokens)
+#   roundtrip - encode then decode via x8r, compare bytes against original input.
+#               this is the strongest invariant: any bug in encode, decode, or
+#               the vocab inverse index breaks round-trip identity.
 CHECK_MODE = os.environ.get("X8R_FUZZ_CHECK", "count")
-if CHECK_MODE not in ("count", "ids"):
-    raise SystemExit(f"X8R_FUZZ_CHECK must be count or ids, got {CHECK_MODE!r}")
+if CHECK_MODE not in ("count", "ids", "roundtrip"):
+    raise SystemExit(f"X8R_FUZZ_CHECK must be count|ids|roundtrip, got {CHECK_MODE!r}")
 
 
 def ids_x8r(data: bytes) -> list[int]:
@@ -172,6 +175,25 @@ def ids_x8r(data: bytes) -> list[int]:
 def ids_tiktoken(data: bytes) -> list[int]:
     text = data.decode("utf-8", errors="replace")
     return ENC.encode_ordinary(text)
+
+
+def roundtrip_x8r(data: bytes) -> bytes:
+    """encode then decode via x8r; should equal the input round-tripped
+    through utf-8 replace (since that's how x8r treats invalid input)."""
+    env = dict(os.environ, X8R_VOCAB=VOCAB)
+    enc = subprocess.run([X8R, "--encode", "-"], input=data, capture_output=True, env=env, check=True)
+    if not enc.stdout.strip():
+        return b""
+    dec = subprocess.run([X8R, "--decode", "-"], input=enc.stdout, capture_output=True, env=env, check=True)
+    return dec.stdout
+
+
+def roundtrip_expected(data: bytes) -> bytes:
+    """what the round-trip should produce: utf-8-replaced version of input.
+    invalid bytes get encoded as U+FFFD which is then decoded back as its
+    utf-8 representation, so the round-trip is identity only on valid utf-8.
+    """
+    return data.decode("utf-8", errors="replace").encode("utf-8")
 
 
 def shrink(data: bytes, fail_predicate, keep_utf8: bool = False) -> bytes:
@@ -216,8 +238,12 @@ def run(n: int, seed: int):
     counts = {k: [0, 0] for k, _ in generators}  # [total, mismatches]
     failures = []
 
-    fn_x8r = ids_x8r if CHECK_MODE == "ids" else count_x8r
-    fn_tik = ids_tiktoken if CHECK_MODE == "ids" else count_tiktoken
+    if CHECK_MODE == "ids":
+        fn_x8r, fn_tik = ids_x8r, ids_tiktoken
+    elif CHECK_MODE == "roundtrip":
+        fn_x8r, fn_tik = roundtrip_x8r, roundtrip_expected
+    else:
+        fn_x8r, fn_tik = count_x8r, count_tiktoken
     print(f"check mode: {CHECK_MODE}", file=sys.stderr)
 
     for i in range(n):
@@ -242,9 +268,11 @@ def run(n: int, seed: int):
             sa = fn_x8r(shrunk)
             sb = fn_tik(shrunk)
             if CHECK_MODE == "ids":
-                # find first divergence point for the message
                 i_div = next((j for j in range(min(len(sa), len(sb))) if sa[j] != sb[j]), min(len(sa), len(sb)))
                 msg = f"x8r_n={len(sa)} tik_n={len(sb)} first_diff_at={i_div}"
+            elif CHECK_MODE == "roundtrip":
+                i_div = next((j for j in range(min(len(sa), len(sb))) if sa[j] != sb[j]), min(len(sa), len(sb)))
+                msg = f"x8r_bytes={len(sa)} expected_bytes={len(sb)} first_diff_at={i_div}"
             else:
                 msg = f"x8r={sa} tiktoken={sb}"
             failures.append((flavor, shrunk, msg))

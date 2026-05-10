@@ -250,11 +250,71 @@ x8r_status x8r_vocab_load(const char *path, x8r_vocab *out) {
     out->data  = b + header + (size_t)tsz * 4;
     out->map_base = p;
     out->map_size = (size_t)st.st_size;
+    out->rank_to_offset = NULL;
+    out->max_rank = 0;
+
+    /* build reverse index: rank -> offset into data blob.
+     *
+     * pass 1 finds max_rank by walking the populated table slots.
+     * pass 2 allocates rank_to_offset[max_rank+1] and fills it.
+     * cost is one-time at load (~200K entries for o200k), and each pass
+     * costs one memory read per slot of v->table. */
+    uint32_t max_rank = 0;
+    int saw_any = 0;
+    for (uint32_t i = 0; i < tsz; ++i) {
+        uint32_t off = out->table[i];
+        if (off == X8R_VOCAB_EMPTY) continue;
+        if (off + 6 > dbytes) {
+            /* malformed entry; bail. */
+            x8r_vocab_close(out);
+            return X8R_E_VOCAB;
+        }
+        uint32_t rank;
+        memcpy(&rank, out->data + off + 2, 4);
+        if (!saw_any || rank > max_rank) { max_rank = rank; saw_any = 1; }
+    }
+    if (saw_any) {
+        size_t idx_count = (size_t)max_rank + 1;
+        uint32_t *idx = malloc(idx_count * sizeof(uint32_t));
+        if (!idx) {
+            x8r_vocab_close(out);
+            return X8R_E_NOMEM;
+        }
+        for (size_t i = 0; i < idx_count; ++i) idx[i] = UINT32_MAX;
+        for (uint32_t i = 0; i < tsz; ++i) {
+            uint32_t off = out->table[i];
+            if (off == X8R_VOCAB_EMPTY) continue;
+            uint32_t rank;
+            memcpy(&rank, out->data + off + 2, 4);
+            idx[rank] = off;
+        }
+        out->rank_to_offset = idx;
+        out->max_rank = max_rank;
+    }
+
     return X8R_OK;
 }
 
+const uint8_t *x8r_vocab_bytes_for_rank(const x8r_vocab *v, uint32_t rank, size_t *out_len) {
+    if (!v || !v->rank_to_offset) return NULL;
+    if (rank > v->max_rank) return NULL;
+    uint32_t off = v->rank_to_offset[rank];
+    if (off == UINT32_MAX) return NULL;
+    if ((size_t)off + 6 > (size_t)v->data_bytes) return NULL;
+    uint16_t elen;
+    memcpy(&elen, v->data + off, 2);
+    if ((size_t)off + 6 + elen > (size_t)v->data_bytes) return NULL;
+    if (out_len) *out_len = elen;
+    return v->data + off + 6;
+}
+
 void x8r_vocab_close(x8r_vocab *v) {
-    if (v && v->map_base) {
+    if (!v) return;
+    if (v->rank_to_offset) {
+        free(v->rank_to_offset);
+        v->rank_to_offset = NULL;
+    }
+    if (v->map_base) {
         munmap(v->map_base, v->map_size);
         v->map_base = NULL;
     }

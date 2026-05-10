@@ -72,6 +72,23 @@ x8r_status x8r_encode_ordinary(x8r_ctx *ctx,
                                uint32_t **out_ids, size_t *out_n);
 void x8r_ids_free(uint32_t *ids);
 
+/* decode a sequence of token ids back to the original byte stream.
+ * caller frees with x8r_bytes_free.
+ * returns X8R_E_VOCAB if any id is unknown.
+ * matches tiktoken.Encoding.decode_bytes for the same id list.
+ */
+x8r_status x8r_decode_bytes(x8r_ctx *ctx,
+                            const uint32_t *ids, size_t n,
+                            uint8_t **out_bytes, size_t *out_len);
+void x8r_bytes_free(uint8_t *bytes);
+
+/* per-id decode for callers building their own buffers. returns NULL if
+ * the id is unknown to the loaded vocab. *out_len is set to the byte
+ * length of the token. the returned pointer is borrowed from the vocab
+ * mmap and is valid until x8r_ctx_close.
+ */
+const uint8_t *x8r_decode_single(x8r_ctx *ctx, uint32_t id, size_t *out_len);
+
 x8r_status x8r_chunk_buf(x8r_ctx *ctx,
                          const uint8_t *buf, size_t len,
                          const x8r_opts *opts,

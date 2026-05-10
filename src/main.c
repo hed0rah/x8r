@@ -21,6 +21,7 @@ static void usage(FILE *f) {
         "  --json               emit json output\n"
         "  --count              just print the total token count\n"
         "  --encode             print token ids, one per line (or json array)\n"
+        "  --decode             read ids from stdin/file (one per line), write raw bytes\n"
         "  -h, --help\n",
         f);
 }
@@ -64,6 +65,7 @@ int main(int argc, char **argv) {
     int want_json = 0;
     int count_only = 0;
     int encode_only = 0;
+    int decode_only = 0;
     x8r_boundary_mode boundary = X8R_BOUNDARY_LINE;
     double tolerance = 0.10;
     x8r_vocab_id model = X8R_VOCAB_AUTO;
@@ -91,6 +93,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--json")) { want_json = 1; }
         else if (!strcmp(a, "--count")) { count_only = 1; }
         else if (!strcmp(a, "--encode")) { encode_only = 1; }
+        else if (!strcmp(a, "--decode")) { decode_only = 1; }
         else if (a[0] == '-' && a[1] != '\0' && a[1] != '-') { fprintf(stderr, "unknown flag: %s\n", a); return 2; }
         else { path = a; }
     }
@@ -117,7 +120,47 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
-    if (encode_only) {
+    if (decode_only) {
+        /* parse decimal ids from buf, one per whitespace-separated token. */
+        size_t cap = 1024, n = 0;
+        uint32_t *ids = malloc(cap * sizeof(uint32_t));
+        if (!ids) { fprintf(stderr, "oom\n"); rc = 1; goto cleanup; }
+        size_t i = 0;
+        while (i < len) {
+            while (i < len && (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\n'
+                               || buf[i] == '\r' || buf[i] == ',' || buf[i] == '['
+                               || buf[i] == ']')) i++;
+            if (i >= len) break;
+            uint64_t val = 0;
+            int saw_digit = 0;
+            while (i < len && buf[i] >= '0' && buf[i] <= '9') {
+                val = val * 10 + (buf[i] - '0');
+                if (val > 0xFFFFFFFFu) { fprintf(stderr, "id overflow\n"); rc = 1; free(ids); goto cleanup; }
+                saw_digit = 1;
+                i++;
+            }
+            if (!saw_digit) { fprintf(stderr, "non-numeric in id list at byte %zu\n", i); rc = 1; free(ids); goto cleanup; }
+            if (n == cap) {
+                cap *= 2;
+                uint32_t *nb = realloc(ids, cap * sizeof(uint32_t));
+                if (!nb) { fprintf(stderr, "oom\n"); rc = 1; free(ids); goto cleanup; }
+                ids = nb;
+            }
+            ids[n++] = (uint32_t)val;
+        }
+        uint8_t *out_bytes = NULL;
+        size_t out_n = 0;
+        st = x8r_decode_bytes(ctx, ids, n, &out_bytes, &out_n);
+        if (st != X8R_OK) {
+            fprintf(stderr, "decode failed: %d (status %d)\n",
+                    st == X8R_E_VOCAB ? 1 : 2, st);
+            rc = 1;
+        } else {
+            if (out_n > 0) fwrite(out_bytes, 1, out_n, stdout);
+            x8r_bytes_free(out_bytes);
+        }
+        free(ids);
+    } else if (encode_only) {
         uint32_t *ids = NULL;
         size_t n = 0;
         st = x8r_encode_ordinary(ctx, buf, len, &ids, &n);
@@ -160,6 +203,7 @@ int main(int argc, char **argv) {
         x8r_chunks_free(chunks);
     }
 
+cleanup:
     x8r_ctx_close(ctx);
     if (handle) x8r_munmap(handle, len);
     free(stdin_buf);

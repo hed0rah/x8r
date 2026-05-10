@@ -117,6 +117,50 @@ x8r_status x8r_encode_ordinary(x8r_ctx *ctx,
 
 void x8r_ids_free(uint32_t *ids) { free(ids); }
 
+const uint8_t *x8r_decode_single(x8r_ctx *ctx, uint32_t id, size_t *out_len) {
+    if (!ctx) return NULL;
+    return x8r_vocab_bytes_for_rank(&ctx->vocab, id, out_len);
+}
+
+x8r_status x8r_decode_bytes(x8r_ctx *ctx,
+                            const uint32_t *ids, size_t n,
+                            uint8_t **out_bytes, size_t *out_len) {
+    if (!ctx || !out_bytes || !out_len) return X8R_E_ARG;
+    if (n == 0) {
+        *out_bytes = NULL;
+        *out_len = 0;
+        return X8R_OK;
+    }
+    if (!ids) return X8R_E_ARG;
+
+    /* pass 1: compute total length, validate every id */
+    size_t total = 0;
+    for (size_t i = 0; i < n; ++i) {
+        size_t tlen = 0;
+        const uint8_t *p = x8r_vocab_bytes_for_rank(&ctx->vocab, ids[i], &tlen);
+        if (!p) return X8R_E_VOCAB;
+        total += tlen;
+    }
+
+    uint8_t *out = total ? malloc(total) : NULL;
+    if (total && !out) return X8R_E_NOMEM;
+
+    /* pass 2: copy. lookups are O(1) so this is just a memcpy chain. */
+    size_t cur = 0;
+    for (size_t i = 0; i < n; ++i) {
+        size_t tlen = 0;
+        const uint8_t *p = x8r_vocab_bytes_for_rank(&ctx->vocab, ids[i], &tlen);
+        memcpy(out + cur, p, tlen);
+        cur += tlen;
+    }
+
+    *out_bytes = out;
+    *out_len = total;
+    return X8R_OK;
+}
+
+void x8r_bytes_free(uint8_t *bytes) { free(bytes); }
+
 /* find largest i with pt_tok_cum[i] <= target; returns -1 if none */
 static ssize_t upper_bound(const size_t *a, size_t n, size_t target) {
     ssize_t lo = 0, hi = (ssize_t)n - 1, ans = -1;

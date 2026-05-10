@@ -37,6 +37,10 @@ typedef struct {
     const uint8_t *data;     /* raw blob */
     void *map_base;          /* for munmap */
     size_t map_size;
+    /* decode index: rank -> offset into data blob. UINT32_MAX = absent.
+     * built once at vocab load, owned by this struct, freed in close. */
+    uint32_t *rank_to_offset;
+    uint32_t max_rank;
 } x8r_vocab;
 
 /* pre-tokenizer sink: called once per pre-token boundary */
@@ -62,6 +66,9 @@ x8r_status x8r_vocab_load(const char *path, x8r_vocab *out);
 void x8r_vocab_close(x8r_vocab *v);
 /* lookup: returns rank for token bytes, or UINT32_MAX if missing */
 uint32_t x8r_vocab_lookup(const x8r_vocab *v, const uint8_t *bytes, size_t len);
+/* reverse lookup: returns pointer to raw bytes for a given rank, or NULL.
+ * sets *out_len to the byte length of the token. */
+const uint8_t *x8r_vocab_bytes_for_rank(const x8r_vocab *v, uint32_t rank, size_t *out_len);
 
 /* pretok_scalar.c - cl100k pre-tokenizer (scalar + ASCII AVX2 accel) */
 size_t x8r_pretokenize_scalar(const uint8_t *buf, size_t len,
