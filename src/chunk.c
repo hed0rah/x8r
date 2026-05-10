@@ -84,6 +84,39 @@ size_t x8r_count_tokens(x8r_ctx *ctx, const uint8_t *buf, size_t len) {
     return c.total;
 }
 
+/* encode-only: append ranks for each pre-token to a single growing array */
+typedef struct {
+    const uint8_t *buf;
+    const x8r_vocab *vocab;
+    uint32_t *ranks;
+    size_t ranks_cap;
+    size_t ranks_len;
+} encode_ctx;
+
+static void pretok_sink_encode(void *user, size_t start, size_t plen) {
+    encode_ctx *c = (encode_ctx *)user;
+    x8r_bpe_encode(c->vocab, c->buf + start, plen,
+                   &c->ranks, &c->ranks_cap, &c->ranks_len);
+}
+
+x8r_status x8r_encode_ordinary(x8r_ctx *ctx,
+                               const uint8_t *buf, size_t len,
+                               uint32_t **out_ids, size_t *out_n) {
+    if (!ctx || !out_ids || !out_n) return X8R_E_ARG;
+    encode_ctx c = { buf, &ctx->vocab, NULL, 0, 0 };
+    ctx->pretokenize(buf, len, pretok_sink_encode, &c);
+    /* trim to exact size so the caller can free() with no surprises */
+    if (c.ranks_len < c.ranks_cap && c.ranks) {
+        uint32_t *t = realloc(c.ranks, c.ranks_len * sizeof(uint32_t));
+        if (t || c.ranks_len == 0) c.ranks = t;
+    }
+    *out_ids = c.ranks;
+    *out_n = c.ranks_len;
+    return X8R_OK;
+}
+
+void x8r_ids_free(uint32_t *ids) { free(ids); }
+
 /* find largest i with pt_tok_cum[i] <= target; returns -1 if none */
 static ssize_t upper_bound(const size_t *a, size_t n, size_t target) {
     ssize_t lo = 0, hi = (ssize_t)n - 1, ans = -1;

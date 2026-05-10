@@ -154,6 +154,26 @@ def count_tiktoken(data: bytes) -> int:
     return len(ENC.encode_ordinary(text))
 
 
+# ID-level fuzz mode: use --encode and compare lists, not just counts.
+# Catches "same total, different tokens" bugs that count-only fuzzing misses.
+# Enabled by X8R_FUZZ_CHECK=ids; default is count.
+CHECK_MODE = os.environ.get("X8R_FUZZ_CHECK", "count")
+if CHECK_MODE not in ("count", "ids"):
+    raise SystemExit(f"X8R_FUZZ_CHECK must be count or ids, got {CHECK_MODE!r}")
+
+
+def ids_x8r(data: bytes) -> list[int]:
+    env = dict(os.environ, X8R_VOCAB=VOCAB)
+    r = subprocess.run([X8R, "--encode", "-"], input=data, capture_output=True, env=env, check=True)
+    out = r.stdout.strip()
+    return [int(x) for x in out.split()] if out else []
+
+
+def ids_tiktoken(data: bytes) -> list[int]:
+    text = data.decode("utf-8", errors="replace")
+    return ENC.encode_ordinary(text)
+
+
 def shrink(data: bytes, fail_predicate, keep_utf8: bool = False) -> bytes:
     """simple bisection shrinker. if keep_utf8, only accept candidates
     that are still valid utf-8 so reproducers remain readable."""
@@ -196,28 +216,38 @@ def run(n: int, seed: int):
     counts = {k: [0, 0] for k, _ in generators}  # [total, mismatches]
     failures = []
 
+    fn_x8r = ids_x8r if CHECK_MODE == "ids" else count_x8r
+    fn_tik = ids_tiktoken if CHECK_MODE == "ids" else count_tiktoken
+    print(f"check mode: {CHECK_MODE}", file=sys.stderr)
+
     for i in range(n):
         flavor, gen = generators[i % len(generators)]
         data = gen(i)
         counts[flavor][0] += 1
         try:
-            a = count_x8r(data)
-            b = count_tiktoken(data)
+            a = fn_x8r(data)
+            b = fn_tik(data)
         except subprocess.CalledProcessError as e:
             failures.append((flavor, data, f"x8r crashed: {e.stderr!r}"))
             counts[flavor][1] += 1
             continue
         if a != b:
             counts[flavor][1] += 1
-            def predicate(d, _a=a, _b=b):
+            def predicate(d):
                 try:
-                    return count_x8r(d) != count_tiktoken(d)
+                    return fn_x8r(d) != fn_tik(d)
                 except Exception:
                     return False
             shrunk = shrink(data, predicate, keep_utf8=(flavor in ("utf8_mixed", "realcode")))
-            sa = count_x8r(shrunk)
-            sb = count_tiktoken(shrunk)
-            failures.append((flavor, shrunk, f"x8r={sa} tiktoken={sb}"))
+            sa = fn_x8r(shrunk)
+            sb = fn_tik(shrunk)
+            if CHECK_MODE == "ids":
+                # find first divergence point for the message
+                i_div = next((j for j in range(min(len(sa), len(sb))) if sa[j] != sb[j]), min(len(sa), len(sb)))
+                msg = f"x8r_n={len(sa)} tik_n={len(sb)} first_diff_at={i_div}"
+            else:
+                msg = f"x8r={sa} tiktoken={sb}"
+            failures.append((flavor, shrunk, msg))
 
     print("flavor         total  mismatches")
     for k, (t, m) in counts.items():

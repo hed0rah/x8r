@@ -63,6 +63,15 @@ void x8r_ctx_close(x8r_ctx *ctx);
 
 size_t x8r_count_tokens(x8r_ctx *ctx, const uint8_t *buf, size_t len);
 
+/* encode buf into a freshly-allocated array of token ids.
+ * caller frees with x8r_ids_free.
+ * matches tiktoken.Encoding.encode_ordinary bit-for-bit.
+ */
+x8r_status x8r_encode_ordinary(x8r_ctx *ctx,
+                               const uint8_t *buf, size_t len,
+                               uint32_t **out_ids, size_t *out_n);
+void x8r_ids_free(uint32_t *ids);
+
 x8r_status x8r_chunk_buf(x8r_ctx *ctx,
                          const uint8_t *buf, size_t len,
                          const x8r_opts *opts,

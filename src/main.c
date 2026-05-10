@@ -20,6 +20,7 @@ static void usage(FILE *f) {
         "  --tolerance F        rewind window as fraction of budget (default 0.10)\n"
         "  --json               emit json output\n"
         "  --count              just print the total token count\n"
+        "  --encode             print token ids, one per line (or json array)\n"
         "  -h, --help\n",
         f);
 }
@@ -62,6 +63,7 @@ int main(int argc, char **argv) {
     size_t budget = 0;
     int want_json = 0;
     int count_only = 0;
+    int encode_only = 0;
     x8r_boundary_mode boundary = X8R_BOUNDARY_LINE;
     double tolerance = 0.10;
     x8r_vocab_id model = X8R_VOCAB_AUTO;
@@ -88,6 +90,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--tolerance") && i + 1 < argc) { tolerance = strtod(argv[++i], NULL); }
         else if (!strcmp(a, "--json")) { want_json = 1; }
         else if (!strcmp(a, "--count")) { count_only = 1; }
+        else if (!strcmp(a, "--encode")) { encode_only = 1; }
         else if (a[0] == '-' && a[1] != '\0' && a[1] != '-') { fprintf(stderr, "unknown flag: %s\n", a); return 2; }
         else { path = a; }
     }
@@ -114,7 +117,20 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
-    if (count_only || budget == 0) {
+    if (encode_only) {
+        uint32_t *ids = NULL;
+        size_t n = 0;
+        st = x8r_encode_ordinary(ctx, buf, len, &ids, &n);
+        if (st != X8R_OK) { fprintf(stderr, "encode failed: %d\n", st); rc = 1; }
+        else if (want_json) {
+            fputc('[', stdout);
+            for (size_t i = 0; i < n; ++i) printf("%s%u", i ? "," : "", ids[i]);
+            fputs("]\n", stdout);
+        } else {
+            for (size_t i = 0; i < n; ++i) printf("%u\n", ids[i]);
+        }
+        x8r_ids_free(ids);
+    } else if (count_only || budget == 0) {
         size_t n = x8r_count_tokens(ctx, buf, len);
         if (want_json) printf("{\"tokens\":%zu,\"bytes\":%zu}\n", n, len);
         else printf("%zu\n", n);
